@@ -11,7 +11,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROI_CONFIG_FILE = os.path.join(SCRIPT_DIR, "config", "roi_semaforo.json")
 
 # --- CONFIGURAZIONE GENERALE ---
-CAMERA_INDEX = 1
+CAMERA_INDEX = 0
 MACHINE_ID = "macchina_01"
 
 # --- CONFIGURAZIONE MQTT (IMPOSTAZIONI BMA) ---
