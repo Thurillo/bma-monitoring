@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import json
 import os
+import time
 
 # --- CONFIGURAZIONE ---
 CAMERA_INDEX = 0
@@ -11,7 +12,6 @@ COLORS_TO_CALIBRATE = ["ROSSO", "GIALLO", "VERDE"]
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_DIR = os.path.join(SCRIPT_DIR, "..", "config")
 COLOR_CONFIG_FILE = os.path.join(CONFIG_DIR, "color_ranges.json")
-# <-- AGGIUNTO: Percorso per il file della ROI
 ROI_CONFIG_FILE = os.path.join(CONFIG_DIR, "roi_semaforo.json")
 
 
@@ -19,7 +19,6 @@ def nothing(x):
     pass
 
 
-# <-- AGGIUNTO: Funzione per caricare la ROI, con gestione degli errori
 def load_roi():
     """Carica le coordinate della ROI dal file JSON."""
     if not os.path.exists(ROI_CONFIG_FILE):
@@ -31,10 +30,9 @@ def load_roi():
 
 
 def calibrate():
-    # <-- MODIFICA: Carica la ROI all'avvio
     roi = load_roi()
     if not roi:
-        return  # Esce se il file della ROI non è stato trovato
+        return
 
     cap = cv2.VideoCapture(CAMERA_INDEX)
     if not cap.isOpened():
@@ -42,7 +40,6 @@ def calibrate():
         return
 
     cv2.namedWindow("Trackbars")
-    # ... (Le createTrackbar rimangono invariate) ...
     cv2.createTrackbar("H Min", "Trackbars", 0, 179, nothing)
     cv2.createTrackbar("H Max", "Trackbars", 179, 179, nothing)
     cv2.createTrackbar("S Min", "Trackbars", 0, 255, nothing)
@@ -65,20 +62,17 @@ def calibrate():
                 print("⚠️ Frame non ricevuto.")
                 break
 
-            # <-- MODIFICA PRINCIPALE: Estrai la ROI prima di ogni altra operazione
             x, y, w, h = roi['x'], roi['y'], roi['w'], roi['h']
             roi_frame = frame[y:y + h, x:x + w]
 
-            # Se la ROI è vuota, esci per evitare un crash
             if roi_frame.size == 0:
                 print("⚠️ ROI non valida o fuori dall'immagine. Riconfigura la zona.")
                 time.sleep(1)
                 continue
 
-            # Lavora solo sull'immagine ritagliata (roi_frame)
-            hsv = cv2.cvtColor(roi_frame, cv2.COLOR_BGR_HSV)
+            # --- ECCO LA CORREZIONE ---
+            hsv = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2HSV)
 
-            # ... (Il resto della logica per leggere gli slider è invariato) ...
             h_min = cv2.getTrackbarPos("H Min", "Trackbars")
             h_max = cv2.getTrackbarPos("H Max", "Trackbars")
             s_min = cv2.getTrackbarPos("S Min", "Trackbars")
@@ -91,7 +85,6 @@ def calibrate():
 
             mask = cv2.inRange(hsv, lower_bound, upper_bound)
 
-            # <-- MODIFICA: Mostra la ROI invece dell'immagine intera
             cv2.imshow(f"ROI - Calibra: {color_name}", roi_frame)
             cv2.imshow("Mask", mask)
 
@@ -122,3 +115,4 @@ def calibrate():
 
 if __name__ == "__main__":
     calibrate()
+
