@@ -133,7 +133,8 @@ def main(debug_mode=False):
             if stato_finale != stato_precedente_pubblicato:
                 # --- MODIFICA: Creazione del payload con data leggibile ---
                 datetime_obj = datetime.fromtimestamp(current_time)
-                datetime_string = datetime_obj.strftime('%H:%M:%S-%d:%m:%Y')  # Formato richiesto
+                #datetime_string = datetime_obj.strftime('%H:%M:%S-%d:%m:%Y')  # Formato richiesto
+                datetime_string = datetime_obj.strftime('%Y:%m:%d %H:%M:%S')  # Formato richiesto
 
                 print(f"Stato cambiato: {stato_precedente_pubblicato} -> {stato_finale}. Invio messaggio MQTT...")
 
