@@ -7,23 +7,42 @@ import os
 CAMERA_INDEX = 0
 COLORS_TO_CALIBRATE = ["ROSSO", "GIALLO", "VERDE"]
 
-# Costruisce il percorso corretto per il file di configurazione
+# Costruisce i percorsi corretti per i file di configurazione
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_DIR = os.path.join(SCRIPT_DIR, "..", "config")
-CONFIG_FILE = os.path.join(CONFIG_DIR, "color_ranges.json")
+COLOR_CONFIG_FILE = os.path.join(CONFIG_DIR, "color_ranges.json")
+# <-- AGGIUNTO: Percorso per il file della ROI
+ROI_CONFIG_FILE = os.path.join(CONFIG_DIR, "roi_semaforo.json")
 
 
 def nothing(x):
     pass
 
 
+# <-- AGGIUNTO: Funzione per caricare la ROI, con gestione degli errori
+def load_roi():
+    """Carica le coordinate della ROI dal file JSON."""
+    if not os.path.exists(ROI_CONFIG_FILE):
+        print(f"❌ Errore: File di configurazione '{ROI_CONFIG_FILE}' non trovato.")
+        print("➡️  Esegui prima lo script 'configura_zona.py'!")
+        return None
+    with open(ROI_CONFIG_FILE, 'r') as f:
+        return json.load(f)
+
+
 def calibrate():
+    # <-- MODIFICA: Carica la ROI all'avvio
+    roi = load_roi()
+    if not roi:
+        return  # Esce se il file della ROI non è stato trovato
+
     cap = cv2.VideoCapture(CAMERA_INDEX)
     if not cap.isOpened():
         print("❌ Errore: Impossibile accedere alla webcam.")
         return
 
     cv2.namedWindow("Trackbars")
+    # ... (Le createTrackbar rimangono invariate) ...
     cv2.createTrackbar("H Min", "Trackbars", 0, 179, nothing)
     cv2.createTrackbar("H Max", "Trackbars", 179, 179, nothing)
     cv2.createTrackbar("S Min", "Trackbars", 0, 255, nothing)
@@ -35,18 +54,31 @@ def calibrate():
 
     for color_name in COLORS_TO_CALIBRATE:
         print(f"\n--- Calibrazione per il colore: {color_name} ---")
+        print("   -> Lavorando solo sulla zona (ROI) preselezionata.")
         print("1. Usa gli slider per isolare il colore nella finestra 'Mask'.")
         print("2. Quando sei soddisfatto, premi 's' per salvare e passare al colore successivo.")
         print("3. Premi 'q' per annullare l'intera operazione.")
 
-        # Loop per la calibrazione del singolo colore
         while True:
             ret, frame = cap.read()
             if not ret:
                 print("⚠️ Frame non ricevuto.")
                 break
 
-            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            # <-- MODIFICA PRINCIPALE: Estrai la ROI prima di ogni altra operazione
+            x, y, w, h = roi['x'], roi['y'], roi['w'], roi['h']
+            roi_frame = frame[y:y + h, x:x + w]
+
+            # Se la ROI è vuota, esci per evitare un crash
+            if roi_frame.size == 0:
+                print("⚠️ ROI non valida o fuori dall'immagine. Riconfigura la zona.")
+                time.sleep(1)
+                continue
+
+            # Lavora solo sull'immagine ritagliata (roi_frame)
+            hsv = cv2.cvtColor(roi_frame, cv2.COLOR_BGR_HSV)
+
+            # ... (Il resto della logica per leggere gli slider è invariato) ...
             h_min = cv2.getTrackbarPos("H Min", "Trackbars")
             h_max = cv2.getTrackbarPos("H Max", "Trackbars")
             s_min = cv2.getTrackbarPos("S Min", "Trackbars")
@@ -59,32 +91,30 @@ def calibrate():
 
             mask = cv2.inRange(hsv, lower_bound, upper_bound)
 
-            cv2.imshow(f"Originale - Calibra: {color_name}", frame)
+            # <-- MODIFICA: Mostra la ROI invece dell'immagine intera
+            cv2.imshow(f"ROI - Calibra: {color_name}", roi_frame)
             cv2.imshow("Mask", mask)
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord('s'):
-                # Salva i valori per il colore corrente
                 calibrated_data[color_name] = {
                     "lower": [h_min, s_min, v_min],
                     "upper": [h_max, s_max, v_max]
                 }
-                print(
-                    f"✅ Valori per {color_name} salvati: lower={calibrated_data[color_name]['lower']}, upper={calibrated_data[color_name]['upper']}")
-                break  # Esce dal loop del singolo colore
+                print(f"✅ Valori per {color_name} salvati.")
+                break
 
             if key == ord('q'):
-                print("\n❌ Calibrazione annullata dall'utente.")
+                print("\n❌ Calibrazione annullata.")
                 cap.release()
                 cv2.destroyAllWindows()
                 return
 
-    # Salva il file JSON
     os.makedirs(CONFIG_DIR, exist_ok=True)
-    with open(CONFIG_FILE, 'w') as f:
+    with open(COLOR_CONFIG_FILE, 'w') as f:
         json.dump(calibrated_data, f, indent=4)
 
-    print(f"\n\n🎉 Calibrazione completata! I valori sono stati salvati in '{CONFIG_FILE}'.")
+    print(f"\n\n🎉 Calibrazione completata! Valori salvati in '{COLOR_CONFIG_FILE}'.")
 
     cap.release()
     cv2.destroyAllWindows()
@@ -92,4 +122,3 @@ def calibrate():
 
 if __name__ == "__main__":
     calibrate()
-
