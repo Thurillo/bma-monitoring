@@ -14,14 +14,14 @@ ROI_CONFIG_FILE = os.path.join(PROJECT_ROOT, "bma_monitoring", "config", "roi_se
 
 # --- CONFIGURAZIONE GENERALE ---
 CAMERA_INDEX = 0
-MACHINE_ID = "macchina_01"  # ⬅️ CAMBIA QUESTO ID PER OGNI MACCHINA
+MACHINE_ID = "linux_01"  # ⬅️ CAMBIA QUESTO ID PER OGNI MACCHINA
 
 # --- CONFIGURAZIONE MQTT ---
 # ⬇️⬇️⬇️ MODIFICA QUESTI VALORI CON I TUOI ⬇️⬇️⬇️
-MQTT_BROKER = "192.168.1.100"  # ⬅️ IP del tuo broker Mosquitto
+MQTT_BROKER = "192.168.20.163"  # ⬅️ IP del tuo broker Mosquitto
 MQTT_PORT = 1883
-MQTT_USERNAME = "tuo_utente"  # ⬅️ Inserisci il tuo nome utente MQTT
-MQTT_PASSWORD = "tua_password"  # ⬅️ Inserisci la tua password MQTT
+MQTT_USERNAME = "shima"  # ⬅️ Inserisci il tuo nome utente MQTT
+MQTT_PASSWORD = "shima"  # ⬅️ Inserisci la tua password MQTT
 # ⬆️⬆️⬆️ MODIFICA QUESTI VALORI CON I TUOI ⬆️⬆️⬆️
 
 MQTT_TOPIC = f"bma/{MACHINE_ID}/semaforo/stato"
