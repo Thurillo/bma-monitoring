@@ -7,7 +7,7 @@ import os
 
 # --- CONFIGURAZIONE ---
 CAMERA_INDEX = 0
-ROI_CONFIG_FILE = "bma-monitoring/config/roi_semaforo.json"
+ROI_CONFIG_FILE = "config/roi_semaforo.json"
 
 # --- CONFIGURAZIONE MQTT ---
 MQTT_BROKER = "192.168.20.63"  # ⬅️ SOSTITUISCI CON L'IP DEL TUO BROKER
