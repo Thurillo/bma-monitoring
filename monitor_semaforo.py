@@ -6,6 +6,7 @@ import time
 import os
 import argparse
 from collections import deque
+from datetime import datetime  # <-- AGGIUNTO: Modulo per gestire date e ore
 
 # --- CONFIGURAZIONE ---
 CAMERA_INDEX = 0
@@ -24,18 +25,14 @@ MQTT_PASSWORD = "shima"
 MQTT_TOPIC_BASE = "bma"
 MQTT_TOPIC = f"{MQTT_TOPIC_BASE}/{MACHINE_ID}/semaforo/stato"
 
-# --- MODIFICA: Parametri per la gestione del lampeggio ---
-# Tempo in secondi per cui una luce deve essere spenta prima di essere considerata "SPENTO"
+# --- Parametri per la gestione del lampeggio ---
 SPENTO_PERSISTENCE_SECONDS = 1.5
-# Finestra temporale in secondi per analizzare la storia degli stati (deve essere > di SPENTO_PERSISTENCE_SECONDS)
 HISTORY_WINDOW_SECONDS = 2.0
-# Pixel minimi per considerare un colore attivo
 PIXEL_THRESHOLD = 150
 
 
 # --- FUNZIONI DI SUPPORTO ---
 def load_config(file_path, config_name):
-    """Carica un file di configurazione JSON."""
     if not os.path.exists(file_path):
         print(f"❌ Errore: File '{file_path}' non trovato.")
         print(f"➡️  Esegui prima lo script di configurazione per '{config_name}'!")
@@ -118,10 +115,7 @@ def main(debug_mode=False):
             while stato_storia and stato_storia[0][0] < current_time - HISTORY_WINDOW_SECONDS:
                 stato_storia.popleft()
 
-            # --- MODIFICA: Logica di persistenza per gestire il lampeggio ---
             # 3. Determina lo stato finale da pubblicare
-
-            # Cerca l'ultimo colore (non SPENTO) e quando è apparso
             ultimo_colore_visto = "SPENTO"
             tempo_ultimo_colore = 0
             for t, s in reversed(stato_storia):
@@ -130,18 +124,26 @@ def main(debug_mode=False):
                     tempo_ultimo_colore = t
                     break
 
-            # Decide lo stato finale basandosi sul "periodo di grazia"
-            # Se abbiamo visto un colore di recente, quello è lo stato, anche se ora il frame è spento.
             if current_time - tempo_ultimo_colore < SPENTO_PERSISTENCE_SECONDS:
                 stato_finale = ultimo_colore_visto
             else:
-                # È passato troppo tempo dall'ultimo colore, quindi lo stato è ufficialmente SPENTO.
                 stato_finale = "SPENTO"
 
             # 4. Pubblica su MQTT solo se lo stato finale è cambiato
             if stato_finale != stato_precedente_pubblicato:
+                # --- MODIFICA: Creazione del payload con data leggibile ---
+                datetime_obj = datetime.fromtimestamp(current_time)
+                datetime_string = datetime_obj.strftime('%H:%M:%S-%d:%m:%Y')  # Formato richiesto
+
                 print(f"Stato cambiato: {stato_precedente_pubblicato} -> {stato_finale}. Invio messaggio MQTT...")
-                payload = json.dumps({"stato": stato_finale, "timestamp": current_time})
+
+                payload = json.dumps({
+                    "stato": stato_finale,
+                    "timestamp": current_time,
+                    "datetime_str": datetime_string  # <-- NUOVO CAMPO
+                })
+                # --- FINE MODIFICA ---
+
                 client.publish(MQTT_TOPIC, payload, qos=1, retain=True)
                 stato_precedente_pubblicato = stato_finale
 
@@ -171,4 +173,3 @@ if __name__ == "__main__":
     parser.add_argument("--debug", action="store_true", help="Abilita le finestre di debug visivo.")
     args = parser.parse_args()
     main(args.debug)
-
