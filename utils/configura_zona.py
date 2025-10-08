@@ -8,7 +8,7 @@ import os
 # In questo modo, funzionerà sempre, indipendentemente da dove lo lanci.
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, '..', '..'))
-CONFIG_DIR = os.path.join(PROJECT_ROOT, "bma_monitoring", "config")
+CONFIG_DIR = os.path.join(PROJECT_ROOT, "bma-monitoring", "config")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "roi_semaforo.json")
 
 CAMERA_INDEX = 0
