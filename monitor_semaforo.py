@@ -5,73 +5,66 @@ import json
 import time
 import os
 import argparse
+from collections import deque
 
-# --- COSTRUZIONE DINAMICA DEI PERCORSI ---
-# Questo rende lo script eseguibile dalla cartella radice del progetto
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-ROI_CONFIG_FILE = os.path.join(SCRIPT_DIR, "config", "roi_semaforo.json")
-COLOR_CONFIG_FILE = os.path.join(SCRIPT_DIR, "config", "color_ranges.json")
-
-# --- CONFIGURAZIONE GENERALE ---
+# --- CONFIGURAZIONE ---
 CAMERA_INDEX = 0
 MACHINE_ID = "macchina_01"
+# Costruisce i percorsi corretti per i file di configurazione
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_DIR = os.path.join(SCRIPT_DIR, "config")
+ROI_CONFIG_FILE = os.path.join(CONFIG_DIR, "roi_semaforo.json")
+COLOR_CONFIG_FILE = os.path.join(CONFIG_DIR, "color_ranges.json")
 
-# --- CONFIGURAZIONE MQTT (IMPOSTAZIONI BMA) ---
+# --- CONFIGURAZIONE MQTT ---
 MQTT_BROKER = "192.168.20.163"
 MQTT_PORT = 1883
 MQTT_USERNAME = "shima"
 MQTT_PASSWORD = "shima"
-MQTT_TOPIC = f"bma/{MACHINE_ID}/semaforo/stato"
+MQTT_TOPIC_BASE = "bma"
+MQTT_TOPIC = f"{MQTT_TOPIC_BASE}/{MACHINE_ID}/semaforo/stato"
+
+# --- MODIFICA: Parametri per la gestione del lampeggio ---
+# Tempo in secondi per cui una luce deve essere spenta prima di essere considerata "SPENTO"
+SPENTO_PERSISTENCE_SECONDS = 1.5
+# Finestra temporale in secondi per analizzare la storia degli stati (deve essere > di SPENTO_PERSISTENCE_SECONDS)
+HISTORY_WINDOW_SECONDS = 2.0
+# Pixel minimi per considerare un colore attivo
+PIXEL_THRESHOLD = 150
 
 
-def load_roi():
-    """Carica le coordinate della ROI dal file JSON."""
-    if not os.path.exists(ROI_CONFIG_FILE):
-        print(f"❌ Errore: File di configurazione '{ROI_CONFIG_FILE}' non trovato.")
-        print("➡️  Esegui prima lo script 'utils/configura_zona.py'!")
+# --- FUNZIONI DI SUPPORTO ---
+def load_config(file_path, config_name):
+    """Carica un file di configurazione JSON."""
+    if not os.path.exists(file_path):
+        print(f"❌ Errore: File '{file_path}' non trovato.")
+        print(f"➡️  Esegui prima lo script di configurazione per '{config_name}'!")
         return None
-    with open(ROI_CONFIG_FILE, 'r') as f:
+    with open(file_path, 'r') as f:
         return json.load(f)
 
 
-def load_color_ranges():
-    """Carica i range di colori calibrati dal file JSON."""
-    if not os.path.exists(COLOR_CONFIG_FILE):
-        print(f"❌ Errore: File di configurazione colori '{COLOR_CONFIG_FILE}' non trovato.")
-        print("➡️  Esegui prima lo script 'utils/calibra_colori.py'!")
-        return None
-    with open(COLOR_CONFIG_FILE, 'r') as f:
-        data = json.load(f)
-        # Converte le liste JSON in tuple per l'uso con OpenCV
-        color_ranges = {color: (data[color]['lower'], data[color]['upper']) for color in data}
-        print("✅ Range di colori caricati con successo dal file di configurazione.")
-        return color_ranges
-
-
-def on_connect(client, userdata, flags, reason_code, properties):
-    """Callback eseguita alla connessione con il broker."""
-    if reason_code == 0:
+# --- CALLBACK MQTT ---
+def on_connect(client, userdata, flags, rc, properties):
+    if rc == 0:
         print("✅ Connesso con successo al broker MQTT!")
     else:
-        print(f"❌ Connessione fallita, codice: {reason_code}. Controlla IP, porta, utente e password.")
+        print(f"❌ Connessione fallita, codice: {rc}. Controlla IP, porta, utente e password.")
 
 
-def on_disconnect(client, userdata, reason_code, properties):
-    """Callback eseguita in caso di disconnessione."""
-    if reason_code != 0:
-        print(f"🔌 Disconnessione inaspettata dal broker MQTT! Codice: {reason_code}")
+def on_disconnect(client, userdata, flags, rc, properties):
+    print("🔌 Disconnesso dal broker MQTT. Tenterò di riconnettermi...")
 
 
-def main(args):
-    """Loop principale di monitoraggio."""
-    roi = load_roi()
-    color_ranges = load_color_ranges()
-
-    # Se uno dei due file di configurazione manca, il programma non può partire.
+# --- LOGICA PRINCIPALE ---
+def main(debug_mode=False):
+    # Caricamento configurazioni
+    roi = load_config(ROI_CONFIG_FILE, "ROI")
+    color_ranges = load_config(COLOR_CONFIG_FILE, "colori")
     if not roi or not color_ranges:
         return
 
-    # Inizializza e connetti il client MQTT
+    # Inizializzazione client MQTT
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=MACHINE_ID)
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
@@ -79,95 +72,103 @@ def main(args):
     try:
         print(f"🔗 Tentativo di connessione al broker MQTT: {MQTT_BROKER}...")
         client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        client.loop_start()  # Gestisce la connessione in un thread separato
+        client.loop_start()
     except Exception as e:
         print(f"❌ Errore critico di connessione MQTT: {e}")
         return
 
-    # Inizializza la webcam
+    # Inizializzazione webcam e variabili di stato
     cap = cv2.VideoCapture(CAMERA_INDEX)
     if not cap.isOpened():
         print("❌ Errore: Impossibile accedere alla webcam.")
         return
 
     print("🚀 Avvio monitoraggio semaforo... (Premi Ctrl+C per fermare)")
-    if args.debug:
-        print("   -> 🔎 MODALITÀ DEBUG ATTIVA. Premi 'q' nella finestra video per uscire.")
 
-    stato_precedente = None
+    stato_storia = deque()
+    stato_precedente_pubblicato = None
 
     try:
         while True:
+            current_time = time.time()
             ret, frame = cap.read()
             if not ret:
-                print("⚠️ Frame non ricevuto, riprovo...")
-                time.sleep(1)
+                time.sleep(0.5)
                 continue
 
-            # Estrai la regione di interesse (ROI)
+            # 1. Rilevazione stato istantaneo
             x, y, w, h = roi['x'], roi['y'], roi['w'], roi['h']
             roi_frame = frame[y:y + h, x:x + w]
-
-            # Converti in spazio colore HSV per un rilevamento più robusto
             hsv_frame = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2HSV)
 
-            stato_corrente = "SPENTO"
-            max_pixels = 100  # Soglia minima di pixel per considerare un colore attivo
+            stato_istantaneo = "SPENTO"
+            detected_mask = np.zeros(roi_frame.shape[:2], dtype="uint8")
 
-            combined_mask = np.zeros(hsv_frame.shape[:2], dtype="uint8")
+            for color_name, ranges in color_ranges.items():
+                lower = np.array(ranges["lower"])
+                upper = np.array(ranges["upper"])
+                mask = cv2.inRange(hsv_frame, lower, upper)
+                if cv2.countNonZero(mask) > PIXEL_THRESHOLD:
+                    stato_istantaneo = color_name
+                    detected_mask = mask
+                    break
 
-            # Itera sui colori caricati dal file JSON
-            for color_name, (lower, upper) in color_ranges.items():
-                mask = cv2.inRange(hsv_frame, np.array(lower), np.array(upper))
+            # 2. Aggiornamento della storia degli stati
+            stato_storia.append((current_time, stato_istantaneo))
+            while stato_storia and stato_storia[0][0] < current_time - HISTORY_WINDOW_SECONDS:
+                stato_storia.popleft()
 
-                if args.debug:
-                    combined_mask = cv2.bitwise_or(combined_mask, mask)
+            # --- MODIFICA: Logica di persistenza per gestire il lampeggio ---
+            # 3. Determina lo stato finale da pubblicare
 
-                pixel_count = cv2.countNonZero(mask)
-                if pixel_count > max_pixels:
-                    stato_corrente = color_name
-                    # Non usciamo subito dal ciclo per gestire il caso in cui più colori
-                    # siano rilevati; vincerà quello con più pixel.
-                    max_pixels = pixel_count
+            # Cerca l'ultimo colore (non SPENTO) e quando è apparso
+            ultimo_colore_visto = "SPENTO"
+            tempo_ultimo_colore = 0
+            for t, s in reversed(stato_storia):
+                if s != "SPENTO":
+                    ultimo_colore_visto = s
+                    tempo_ultimo_colore = t
+                    break
 
-            # Pubblica su MQTT solo se lo stato è cambiato
-            if stato_corrente != stato_precedente:
-                print(f"\nStato cambiato: {stato_precedente} -> {stato_corrente}. Invio messaggio MQTT...")
-                payload = json.dumps({"stato": stato_corrente, "timestamp": int(time.time())})
+            # Decide lo stato finale basandosi sul "periodo di grazia"
+            # Se abbiamo visto un colore di recente, quello è lo stato, anche se ora il frame è spento.
+            if current_time - tempo_ultimo_colore < SPENTO_PERSISTENCE_SECONDS:
+                stato_finale = ultimo_colore_visto
+            else:
+                # È passato troppo tempo dall'ultimo colore, quindi lo stato è ufficialmente SPENTO.
+                stato_finale = "SPENTO"
+
+            # 4. Pubblica su MQTT solo se lo stato finale è cambiato
+            if stato_finale != stato_precedente_pubblicato:
+                print(f"Stato cambiato: {stato_precedente_pubblicato} -> {stato_finale}. Invio messaggio MQTT...")
+                payload = json.dumps({"stato": stato_finale, "timestamp": current_time})
                 client.publish(MQTT_TOPIC, payload, qos=1, retain=True)
-                stato_precedente = stato_corrente
+                stato_precedente_pubblicato = stato_finale
 
-            # Sezione per mostrare le finestre di debug
-            if args.debug:
+            # 5. Debug visivo (se attivato)
+            if debug_mode:
                 cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                cv2.putText(frame, f"Stato Pubblicato: {stato_finale}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                            (255, 255, 255), 2)
                 cv2.imshow("Live Feed con ROI", frame)
-                cv2.imshow("ROI Analizzata", roi_frame)
-                cv2.imshow("Maschera Colore Rilevato", combined_mask)
-
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q'):
+                cv2.imshow("Maschera Colore Rilevato", detected_mask)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
             else:
-                # In modalità normale, una piccola pausa per non caricare la CPU al 100%
-                time.sleep(0.5)
+                time.sleep(0.1)
 
-    except KeyboardInterrupt:
-        print("\n Arresto del programma richiesto dall'utente.")
     finally:
-        # Blocco di pulizia per chiudere tutto correttamente
-        print("🧹 Pulizia e chiusura delle risorse...")
+        print("\n🛑 Fermo il monitoraggio e pulisco le risorse...")
         cap.release()
-        if args.debug:
-            cv2.destroyAllWindows()
         client.loop_stop()
         client.disconnect()
-        print("Arrivederci!")
+        cv2.destroyAllWindows()
+        print("Uscita pulita.")
 
 
 if __name__ == "__main__":
-    # Logica per leggere gli argomenti da riga di comando (es. --debug)
-    parser = argparse.ArgumentParser(description="Monitora lo stato di un semaforo via webcam e invia dati via MQTT.")
-    parser.add_argument("--debug", action="store_true", help="Abilita la modalità debug con finestre video.")
+    parser = argparse.ArgumentParser(description="Monitoraggio semaforo per macchine BMA.")
+    parser.add_argument("--debug", action="store_true", help="Abilita le finestre di debug visivo.")
     args = parser.parse_args()
-    main(args)
+    main(args.debug)
 

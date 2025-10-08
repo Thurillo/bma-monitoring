@@ -6,7 +6,8 @@ import time
 
 # --- CONFIGURAZIONE ---
 CAMERA_INDEX = 0
-COLORS_TO_CALIBRATE = ["ROSSO", "GIALLO", "VERDE"]
+# <-- MODIFICA: Rimosso il GIALLO dalla lista di calibrazione
+COLORS_TO_CALIBRATE = ["ROSSO", "VERDE"]
 
 # Costruisce i percorsi corretti per i file di configurazione
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -70,7 +71,6 @@ def calibrate():
                 time.sleep(1)
                 continue
 
-            # --- ECCO LA CORREZIONE ---
             hsv = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2HSV)
 
             h_min = cv2.getTrackbarPos("H Min", "Trackbars")
@@ -115,4 +115,3 @@ def calibrate():
 
 if __name__ == "__main__":
     calibrate()
-
