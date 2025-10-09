@@ -8,8 +8,8 @@ import time
 CAMERA_INDEX = 0
 COLORS_TO_CALIBRATE = ["ROSSO", "VERDE"]
 # <-- AGGIUNTO: Tolleranze per l'impostazione automatica degli slider
-HUE_TOLERANCE = 40  # Tolleranza per la Tonalità (più stretta) prima 10
-SV_TOLERANCE = 60  # Tolleranza per Saturazione/Luminosità (più ampia) prima 40
+HUE_TOLERANCE = 20  # Tolleranza per la Tonalità (più stretta) prima 10
+SV_TOLERANCE = 45  # Tolleranza per Saturazione/Luminosità (più ampia) prima 40
 
 # Percorsi
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
