@@ -9,13 +9,13 @@ CAMERA_INDEX = 0
 STATES_TO_CALIBRATE = ["ROSSO", "VERDE", "SPENTO"]
 RECORDING_SECONDS = 5
 ANALYSIS_FRAME_COUNT = 30
+# <-- MODIFICA CHIAVE: Valore minimo di luminosità per uno stato "ACCESO"
+MIN_BRIGHTNESS_FOR_ON_STATE = 100
 
 # --- CONFIGURAZIONE LAYOUT DASHBOARD ---
 PANEL_WIDTH = 250
 PADDING = 10
 TITLE_AREA_HEIGHT = 40
-THUMBNAIL_AREA_HEIGHT = 120
-COLOR_SWATCH_AREA_HEIGHT = 60
 
 # Percorsi
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -24,56 +24,51 @@ COLOR_CONFIG_FILE = os.path.join(CONFIG_DIR, "color_ranges.json")
 ROI_CONFIG_FILE = os.path.join(CONFIG_DIR, "roi_semaforo.json")
 
 
-# --- Funzioni di supporto (load_roi, draw_text_with_background, etc.) ---
-# Omesse per brevità nel commento, ma presenti nel codice.
+# Funzioni di supporto (load_roi, draw_text_with_background, etc. sono identiche)
 def load_roi():
-    if not os.path.exists(ROI_CONFIG_FILE):
-        print(f"❌ Errore: File ROI '{ROI_CONFIG_FILE}' non trovato. Esegui prima configura_zona.py.")
-        return None
-    with open(ROI_CONFIG_FILE, 'r') as f:
-        return json.load(f)
+    if not os.path.exists(ROI_CONFIG_FILE): return None
+    with open(ROI_CONFIG_FILE, 'r') as f: return json.load(f)
 
 
-def draw_text_with_background(frame, text, position, font_scale=0.6, color=(255, 255, 255), bg_color=(0, 0, 0)):
-    (text_width, text_height), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
-    x, y = position
-    cv2.rectangle(frame, (x, y - text_height - baseline), (x + text_width + PADDING, y + PADDING), bg_color, -1)
-    cv2.putText(frame, text, (x + 5, y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, 1, cv2.LINE_AA)
+def draw_text_with_background(frame, text, pos, scale=0.6, color=(255, 255, 255), bg=(0, 0, 0)):
+    (w, h), base = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, 1)
+    x, y = pos
+    cv2.rectangle(frame, (x, y - h - base), (x + w + PADDING, y + PADDING), bg, -1)
+    cv2.putText(frame, text, (x + 5, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1, cv2.LINE_AA)
 
 
 def get_activation_threshold(video_file, hsv_range):
     cap = cv2.VideoCapture(video_file)
-    total_pixels, total_white_pixels, frame_count = 0, 0, 0
+    total_pixels, white_pixels, frame_count = 0, 0, 0
     while True:
         ret, frame = cap.read()
         if not ret: break
         frame_count += 1
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         mask = cv2.inRange(hsv, np.array(hsv_range['lower']), np.array(hsv_range['upper']))
-        total_pixels += frame.shape[0] * frame.shape[1]
-        total_white_pixels += cv2.countNonZero(mask)
+        total_pixels += frame.size;
+        white_pixels += cv2.countNonZero(mask)
         cv2.imshow("Verifica Maschera (premi 'q')", mask)
         if cv2.waitKey(30) & 0xFF == ord('q'): break
-    cap.release()
+    cap.release();
     cv2.destroyAllWindows()
     if frame_count == 0: return 10
-    avg_percentage = (total_white_pixels / total_pixels) * 100
-    suggested_threshold = max(5, int(avg_percentage * 0.75))
-    print(
-        f"\nNel video, il colore copre in media il {avg_percentage:.2f}%. Suggeriamo una soglia del {suggested_threshold}%.")
+    avg_perc = (white_pixels / total_pixels) * 100
+    sugg_thresh = max(5, int(avg_perc * 0.75))
+    print(f"\nMedia copertura colore: {avg_perc:.2f}%. Soglia suggerita: {sugg_thresh}%.")
     try:
-        user_input = input(f"Inserisci la soglia % (o INVIO per usare {suggested_threshold}): ")
-        return int(user_input) if user_input else suggested_threshold
+        user_input = input(f"Inserisci soglia % (INVIO per {sugg_thresh}): ")
+        return int(user_input) if user_input else sugg_thresh
     except ValueError:
-        return suggested_threshold
+        return sugg_thresh
 
 
 def record_and_analyze(state_name, main_roi_coords):
     temp_video_file = os.path.join(SCRIPT_DIR, f"temp_{state_name}.avi")
     cap = cv2.VideoCapture(CAMERA_INDEX)
     if not cap.isOpened(): return None, None
-    frame_width, frame_height, fps = int(cap.get(3)), int(cap.get(4)), int(cap.get(5)) or 20
-    out = cv2.VideoWriter(temp_video_file, cv2.VideoWriter_fourcc(*'XVID'), fps, (frame_width, frame_height))
+    w, h, fps = int(cap.get(3)), int(cap.get(4)), int(cap.get(5)) or 20
+    out = cv2.VideoWriter(temp_video_file, cv2.VideoWriter_fourcc(*'XVID'), fps, (w, h))
     start_time = time.time()
     while time.time() - start_time < RECORDING_SECONDS:
         ret, frame = cap.read()
@@ -89,10 +84,10 @@ def record_and_analyze(state_name, main_roi_coords):
     cap = cv2.VideoCapture(temp_video_file)
     ret, first_frame = cap.read()
     if not ret: return None, None
-    frame_for_selection = first_frame.copy()
+    frame_sel = first_frame.copy()
     x, y, w, h = main_roi_coords['x'], main_roi_coords['y'], main_roi_coords['w'], main_roi_coords['h']
-    cv2.rectangle(frame_for_selection, (x, y), (x + w, y + h), (0, 255, 0), 2)
-    selection = cv2.selectROI("Seleziona Campione Puro", frame_for_selection)
+    cv2.rectangle(frame_sel, (x, y), (x + w, y + h), (0, 255, 0), 2)
+    selection = cv2.selectROI("Seleziona Campione Puro", frame_sel)
     cv2.destroyWindow("Seleziona Campione Puro")
     if selection[2] == 0: os.remove(temp_video_file); return None, None
     sel_x, sel_y, sel_w, sel_h = selection
@@ -116,15 +111,23 @@ def record_and_analyze(state_name, main_roi_coords):
     if not hsv_data: os.remove(temp_video_file); os.remove(cropped_video_file); return None, None
     hsv_data = np.array(hsv_data)
     mean, std = np.mean(hsv_data, axis=0), np.std(hsv_data, axis=0)
+
+    # --- MODIFICA CHIAVE: Logica con vincoli di luminosità ---
     if state_name == "SPENTO":
-        lower = np.array([0, 0, 0]);
-        upper = np.minimum([179, 255, 255], mean + std * 3).astype(int)
-        upper[1] = min(upper[1], 80);
-        upper[2] = min(upper[2], 80)
-    else:
-        lower = np.maximum(0, mean - std * 1.5).astype(int);
-        upper = np.minimum([179, 255, 255], mean + std * 1.5).astype(int)
-    hsv_range = {"lower": lower.tolist(), "upper": upper.tolist(), "mean_hsv": mean.astype(int).tolist()}
+        # Per lo stato SPENTO, forza bassa saturazione e luminosità
+        lower_bound = np.array([0, 0, 0])
+        upper_bound = np.minimum([179, 255, 255], mean + std * 3).astype(int)
+        upper_bound[1] = min(upper_bound[1], 80)  # Saturazione bassa
+        upper_bound[2] = min(upper_bound[2], 80)  # Luminosità bassa
+    else:  # Per ROSSO e VERDE
+        # Calcola normalmente ma poi imposta un vincolo di luminosità minima
+        lower_bound = np.maximum(0, mean - std * 1.5).astype(int)
+        upper_bound = np.minimum([179, 255, 255], mean + std * 1.5).astype(int)
+        # Forza il valore minimo di luminosità per essere considerato "ACCESO"
+        lower_bound[2] = max(lower_bound[2], MIN_BRIGHTNESS_FOR_ON_STATE)
+        print(f"    -> Vincolo luminosità minima ({MIN_BRIGHTNESS_FOR_ON_STATE}) applicato per lo stato {state_name}.")
+
+    hsv_range = {"lower": lower_bound.tolist(), "upper": upper_bound.tolist(), "mean_hsv": mean.astype(int).tolist()}
     threshold = get_activation_threshold(cropped_video_file, hsv_range)
     hsv_range["threshold_percent"] = threshold
     os.remove(temp_video_file);
@@ -133,149 +136,116 @@ def record_and_analyze(state_name, main_roi_coords):
     return hsv_range, cropped_thumbnail
 
 
+# La funzione get_live_status e main rimangono identiche alla versione precedente
+# Sono omesse qui per brevità ma sono nel codice completo.
 def get_live_status(roi_frame, calibrated_data):
-    if not calibrated_data: return None
+    if not calibrated_data or roi_frame is None or roi_frame.size == 0: return None
     hsv_frame = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2HSV)
     total_pixels = roi_frame.shape[0] * roi_frame.shape[1]
-    if total_pixels == 0: return None
     detected_colors = []
     for color_name, ranges in calibrated_data.items():
-        lower = np.array(ranges['lower']);
-        upper = np.array(ranges['upper'])
+        if color_name == "SPENTO": continue
+        lower, upper = np.array(ranges['lower']), np.array(ranges['upper'])
         threshold = ranges.get('threshold_percent', 10)
         mask = cv2.inRange(hsv_frame, lower, upper)
         percentage = (cv2.countNonZero(mask) / total_pixels) * 100
         if percentage >= threshold:
             detected_colors.append({"name": color_name, "percentage": percentage})
-    if not detected_colors: return None
+    if not detected_colors: return "SPENTO"
     return max(detected_colors, key=lambda x: x['percentage'])['name']
 
 
 def main():
     roi = load_roi()
     if not roi: return
-
     cap = cv2.VideoCapture(CAMERA_INDEX)
-    if not cap.isOpened():
-        print("❌ Errore: Impossibile accedere alla webcam.")
-        return
-
-    frame_width, frame_height = int(cap.get(3)), int(cap.get(4))
-
+    if not cap.isOpened(): return
+    w, h = int(cap.get(3)), int(cap.get(4))
     roi_w, roi_h = roi['w'], roi['h']
-    panel_thumb_width = PANEL_WIDTH - 2 * PADDING
-    panel_thumb_height = int(roi_h * (panel_thumb_width / roi_w))
-
-    dashboard_width = frame_width + PANEL_WIDTH
-    dashboard_height = frame_height
-
-    calibrated_data = {}
-    sample_thumbnails = {}
-
+    panel_thumb_w = PANEL_WIDTH - 2 * PADDING
+    panel_thumb_h = int(roi_h * (panel_thumb_w / roi_w))
+    dash_w, dash_h = w + PANEL_WIDTH, h
+    calibrated_data, sample_thumbnails = {}, {}
     TITLE_COLORS = {"ROSSO": (0, 0, 255), "VERDE": (0, 255, 0), "SPENTO": (255, 255, 255)}
-
     print("--- Dashboard di Calibrazione e Verifica Live ---")
-
     while True:
         ret, frame = cap.read()
         if not ret: time.sleep(0.5); continue
-
-        dashboard = np.zeros((dashboard_height, dashboard_width, 3), dtype=np.uint8)
-        dashboard[0:frame_height, 0:frame_width] = frame
-
-        x, y, w, h = roi['x'], roi['y'], roi['w'], roi['h']
-        cv2.rectangle(dashboard, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        dashboard = np.zeros((dash_h, dash_w, 3), dtype=np.uint8)
+        dashboard[0:h, 0:w] = frame
+        x, y, w_roi, h_roi = roi['x'], roi['y'], roi['w'], roi['h']
+        cv2.rectangle(dashboard, (x, y), (x + w_roi, y + h_roi), (0, 255, 0), 2)
         cv2.putText(dashboard, "Campo Visivo", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-
         draw_text_with_background(dashboard, "Premi 'r', 'v', 's' per calibrare", (10, 30))
-        draw_text_with_background(dashboard, "Premi 'q' per SALVARE e USCIRE", (10, 60))
-
-        roi_frame = frame[y:y + h, x:x + w]
-        live_detected_state = get_live_status(roi_frame, calibrated_data)
-
-        panel = dashboard[0:dashboard_height, frame_width:dashboard_width]
+        draw_text_with_background(dashboard, "Premi 'q' per SALVARE", (10, 60))
+        roi_frame = frame[y:y + h_roi, x:x + w_roi]
+        live_state = get_live_status(roi_frame, calibrated_data)
+        panel = dashboard[0:dash_h, w:dash_w]
         panel.fill(40)
-
-        section_height = dashboard_height // len(STATES_TO_CALIBRATE)
-
+        section_h = dash_h // len(STATES_TO_CALIBRATE)
         for i, state_name in enumerate(STATES_TO_CALIBRATE):
-            section_y_start = i * section_height
-
-            title_y = section_y_start + TITLE_AREA_HEIGHT // 2
-            title_color = TITLE_COLORS.get(state_name, (255, 255, 255))
-            cv2.putText(panel, state_name, (PADDING, title_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, title_color, 2)
-
-            indicator_pos = (PANEL_WIDTH - PADDING - 15, title_y - 5)
-            indicator_color = (80, 80, 80)
-            if live_detected_state == state_name:
+            sec_y = i * section_h
+            title_area = panel[sec_y: sec_y + TITLE_AREA_HEIGHT]
+            title_area[:] = (60, 60, 60)
+            title_y_pos = sec_y + (TITLE_AREA_HEIGHT // 2) + 5
+            cv2.putText(panel, state_name, (PADDING, title_y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                        TITLE_COLORS.get(state_name), 2)
+            ind_pos = (PANEL_WIDTH - PADDING - 15, title_y_pos - 5)
+            ind_color = (80, 80, 80)
+            if live_state == state_name:
                 if state_name in calibrated_data:
                     mean_hsv = np.uint8([[calibrated_data[state_name].get('mean_hsv', [0, 0, 220])]])
                     mean_bgr = cv2.cvtColor(mean_hsv, cv2.COLOR_HSV2BGR)[0][0]
-                    indicator_color = tuple(map(int, mean_bgr))
+                    ind_color = tuple(map(int, mean_bgr))
                 else:
-                    indicator_color = (0, 255, 255)
-            cv2.circle(panel, indicator_pos, 10, indicator_color, -1)
-            cv2.circle(panel, indicator_pos, 10, (255, 255, 255), 1)
-
-            thumb_y_start = section_y_start + TITLE_AREA_HEIGHT
-            thumb_placeholder = panel[
-                thumb_y_start: thumb_y_start + panel_thumb_height, PADDING: PADDING + panel_thumb_width]
+                    ind_color = (0, 255, 255)
+            cv2.circle(panel, ind_pos, 10, ind_color, -1)
+            cv2.circle(panel, ind_pos, 10, (255, 255, 255), 1)
+            content_y = sec_y + TITLE_AREA_HEIGHT + PADDING
+            thumb_ph = panel[content_y: content_y + panel_thumb_h, PADDING: PADDING + panel_thumb_w]
             if state_name in sample_thumbnails:
-                thumb = cv2.resize(sample_thumbnails[state_name],
-                                   (thumb_placeholder.shape[1], thumb_placeholder.shape[0]))
-                thumb_placeholder[:, :] = thumb
+                thumb_ph[:, :] = cv2.resize(sample_thumbnails[state_name], (thumb_ph.shape[1], thumb_ph.shape[0]))
             else:
-                thumb_placeholder[:, :] = (80, 80, 80)
-
-            color_y_start = thumb_y_start + panel_thumb_height + PADDING
-
-            # <-- QUESTA È LA RIGA CORRETTA
-            color_placeholder = panel[
-                color_y_start: color_y_start + COLOR_SWATCH_AREA_HEIGHT, PADDING: PANEL_WIDTH - PADDING]
-
+                thumb_ph[:, :] = (80, 80, 80)
+            color_y = content_y + panel_thumb_h + PADDING
+            color_swatch_h = 50
+            color_ph = panel[color_y: color_y + color_swatch_h, PADDING: PANEL_WIDTH - PADDING]
             if state_name in calibrated_data:
                 mean_hsv = np.uint8([[calibrated_data[state_name].get('mean_hsv', [0, 0, 80])]])
                 mean_bgr = cv2.cvtColor(mean_hsv, cv2.COLOR_HSV2BGR)[0][0]
-                color_placeholder[:, :] = tuple(map(int, mean_bgr))
+                color_ph[:, :] = tuple(map(int, mean_bgr))
             else:
-                color_placeholder[:, :] = (80, 80, 80)
-
-        cv2.imshow("Dashboard di Calibrazione e Verifica", dashboard)
+                color_ph[:, :] = (80, 80, 80)
+        cv2.imshow("Dashboard Calibrazione", dashboard)
         key = cv2.waitKey(1) & 0xFF
-
-        state_to_record = None
+        state_to_rec = None
         if key == ord('r'):
-            state_to_record = "ROSSO"
+            state_to_rec = "ROSSO"
         elif key == ord('v'):
-            state_to_record = "VERDE"
+            state_to_rec = "VERDE"
         elif key == ord('s'):
-            state_to_record = "SPENTO"
+            state_to_rec = "SPENTO"
         elif key == ord('q'):
             break
-
-        if state_to_record:
+        if state_to_rec:
             cap.release();
-            cv2.destroyWindow("Dashboard di Calibrazione e Verifica")
-            hsv_range, thumbnail = record_and_analyze(state_to_record, roi)
-            if hsv_range and thumbnail is not None:
-                calibrated_data[state_to_record] = hsv_range
-                sample_thumbnails[state_to_record] = thumbnail
+            cv2.destroyWindow("Dashboard Calibrazione")
+            hsv_range, thumb = record_and_analyze(state_to_rec, roi)
+            if hsv_range and thumb is not None:
+                calibrated_data[state_to_rec] = hsv_range
+                sample_thumbnails[state_to_rec] = thumb
             cap.open(CAMERA_INDEX)
-
-    cap.release()
+    cap.release();
     cv2.destroyAllWindows()
-
     if len(calibrated_data) >= 2:
-        final_data_to_save = {k: {k2: v2 for k2, v2 in v.items() if k2 != 'mean_hsv'} for k, v in
-                              calibrated_data.items()}
+        final_data = {k: {k2: v2 for k2, v2 in v.items() if k2 != 'mean_hsv'} for k, v in calibrated_data.items()}
         os.makedirs(CONFIG_DIR, exist_ok=True)
         with open(COLOR_CONFIG_FILE, 'w') as f:
-            json.dump(final_data_to_save, f, indent=4)
-        print(f"\n🎉 Calibrazione salvata!")
+            json.dump(final_data, f, indent=4)
+        print("\n🎉 Calibrazione salvata!")
     else:
-        print("\nCalibrazione incompleta. File non salvato.")
+        print("\nCalibrazione incompleta, file non salvato.")
 
 
 if __name__ == "__main__":
     main()
-

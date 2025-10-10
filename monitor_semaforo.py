@@ -5,174 +5,163 @@ import json
 import time
 import os
 import argparse
-from collections import deque
-from datetime import datetime
 
 # --- CONFIGURAZIONE ---
 CAMERA_INDEX = 0
-MACHINE_ID = "macchina_01"
-# Costruisce i percorsi corretti per i file di configurazione
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_DIR = os.path.join(SCRIPT_DIR, "config")
-ROI_CONFIG_FILE = os.path.join(CONFIG_DIR, "roi_semaforo.json")
-COLOR_CONFIG_FILE = os.path.join(CONFIG_DIR, "color_ranges.json")
+STATE_PERSISTENCE_SECONDS = 1.5
 
 # --- CONFIGURAZIONE MQTT ---
 MQTT_BROKER = "192.168.20.163"
 MQTT_PORT = 1883
 MQTT_USERNAME = "shima"
 MQTT_PASSWORD = "shima"
-MQTT_TOPIC_BASE = "bma"
-MQTT_TOPIC = f"{MQTT_TOPIC_BASE}/{MACHINE_ID}/semaforo/stato"
+MACHINE_ID = "macchina_01"
+MQTT_TOPIC_STATUS = f"bma/{MACHINE_ID}/semaforo/stato"
 
-# --- Parametri per la gestione del lampeggio ---
-SPENTO_PERSISTENCE_SECONDS = 1.5
-HISTORY_WINDOW_SECONDS = 2.0
-PIXEL_THRESHOLD = 150
+# Percorsi
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_DIR = os.path.join(SCRIPT_DIR, "config")
+ROI_CONFIG_FILE = os.path.join(CONFIG_DIR, "roi_semaforo.json")
+COLOR_CONFIG_FILE = os.path.join(CONFIG_DIR, "color_ranges.json")
 
 
-# --- FUNZIONI DI SUPPORTO ---
 def load_config(file_path, config_name):
     if not os.path.exists(file_path):
-        print(f"❌ Errore: File '{file_path}' non trovato.")
-        print(f"➡️  Esegui prima lo script di configurazione per '{config_name}'!")
+        print(f"❌ Errore: File di configurazione '{config_name}' non trovato.")
         return None
     with open(file_path, 'r') as f:
         return json.load(f)
 
 
-# --- CALLBACK MQTT ---
 def on_connect(client, userdata, flags, rc, properties):
     if rc == 0:
         print("✅ Connesso con successo al broker MQTT!")
     else:
-        print(f"❌ Connessione fallita, codice: {rc}. Controlla IP, porta, utente e password.")
+        print(f"❌ Connessione fallita, codice: {rc}.")
 
 
-def on_disconnect(client, userdata, flags, rc, properties):
-    print("🔌 Disconnesso dal broker MQTT. Tenterò di riconnettermi...")
+def on_disconnect(client, userdata, rc, properties):
+    print(f"⚠️ Disconnesso dal broker MQTT con codice: {rc}.")
 
 
-# --- LOGICA PRINCIPALE ---
-def main(debug_mode=False):
-    # Caricamento configurazioni
+# <-- MODIFICA CHIAVE: La logica ora ignora la calibrazione 'SPENTO'
+def get_visual_status(roi_frame, color_ranges, debug_frame=None):
+    if roi_frame is None or roi_frame.size == 0: return "SPENTO"
+    hsv_frame = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2HSV)
+    total_pixels = roi_frame.shape[0] * roi_frame.shape[1]
+
+    detected_colors = []
+
+    # Cerca solo i colori "attivi" (non SPENTO)
+    for color_name, ranges in color_ranges.items():
+        if color_name == "SPENTO":
+            continue
+
+        lower = np.array(ranges['lower'])
+        upper = np.array(ranges['upper'])
+        threshold = ranges.get('threshold_percent', 10)
+
+        mask = cv2.inRange(hsv_frame, lower, upper)
+        percentage = (cv2.countNonZero(mask) / total_pixels) * 100
+
+        if debug_frame is not None:
+            text = f"{color_name}: {percentage:.1f}% (>{threshold}%)"
+            color = (0, 255, 0) if percentage >= threshold else (0, 0, 255)
+            cv2.putText(debug_frame, text, (10, 20 + 20 * len(detected_colors)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color,
+                        1)
+
+        if percentage >= threshold:
+            detected_colors.append({"name": color_name, "percentage": percentage})
+
+    # Se nessun colore attivo ha superato la soglia, è SPENTO
+    if not detected_colors:
+        return "SPENTO"
+
+    # Altrimenti, restituisce il colore attivo con la percentuale più alta
+    return max(detected_colors, key=lambda x: x['percentage'])['name']
+
+
+def main(debug=False):
     roi = load_config(ROI_CONFIG_FILE, "ROI")
-    all_ranges = load_config(COLOR_CONFIG_FILE, "colori")
-    if not roi or not all_ranges:
-        return
+    color_ranges = load_config(COLOR_CONFIG_FILE, "Colori")
+    if not roi or not color_ranges: return
 
-    # MODIFICA: Separa i colori da rilevare dalla calibrazione dello stato SPENTO
-    color_ranges_to_detect = {k: v for k, v in all_ranges.items() if k != "SPENTO"}
-    print(f"Colori che verranno monitorati: {list(color_ranges_to_detect.keys())}")
-
-    # Inizializzazione client MQTT
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=MACHINE_ID)
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
     client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
+
     try:
-        print(f"🔗 Tentativo di connessione al broker MQTT: {MQTT_BROKER}...")
         client.connect(MQTT_BROKER, MQTT_PORT, 60)
         client.loop_start()
     except Exception as e:
         print(f"❌ Errore critico di connessione MQTT: {e}")
         return
 
-    # Inizializzazione webcam e variabili di stato
     cap = cv2.VideoCapture(CAMERA_INDEX)
     if not cap.isOpened():
         print("❌ Errore: Impossibile accedere alla webcam.")
+        client.loop_stop()
         return
 
-    print("🚀 Avvio monitoraggio semaforo... (Premi Ctrl+C per fermare)")
+    print("🚀 Avvio monitoraggio... (Premi Ctrl+C per fermare)")
 
-    stato_storia = deque()
-    stato_precedente_pubblicato = None
+    stato_pubblicato = None
+    last_seen_color_time = 0
 
     try:
         while True:
-            current_time = time.time()
             ret, frame = cap.read()
             if not ret:
-                time.sleep(0.5)
+                time.sleep(0.1)
                 continue
 
-            # 1. Rilevazione stato istantaneo
             x, y, w, h = roi['x'], roi['y'], roi['w'], roi['h']
             roi_frame = frame[y:y + h, x:x + w]
-            hsv_frame = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2HSV)
 
-            stato_istantaneo = "SPENTO"
-            detected_mask = np.zeros(roi_frame.shape[:2], dtype="uint8")
+            debug_info_frame = roi_frame.copy() if debug else None
 
-            # MODIFICA: Itera solo sui colori attivi
-            for color_name, ranges in color_ranges_to_detect.items():
-                lower = np.array(ranges["lower"])
-                upper = np.array(ranges["upper"])
-                mask = cv2.inRange(hsv_frame, lower, upper)
-                if cv2.countNonZero(mask) > PIXEL_THRESHOLD:
-                    stato_istantaneo = color_name
-                    detected_mask = mask
-                    break
+            stato_corrente_visivo = get_visual_status(roi_frame, color_ranges, debug_info_frame)
 
-            # 2. Aggiornamento della storia degli stati
-            stato_storia.append((current_time, stato_istantaneo))
-            while stato_storia and stato_storia[0][0] < current_time - HISTORY_WINDOW_SECONDS:
-                stato_storia.popleft()
-
-            # 3. Determina lo stato finale da pubblicare
-            ultimo_colore_visto = "SPENTO"
-            tempo_ultimo_colore = 0
-            for t, s in reversed(stato_storia):
-                if s != "SPENTO":
-                    ultimo_colore_visto = s
-                    tempo_ultimo_colore = t
-                    break
-
-            if current_time - tempo_ultimo_colore < SPENTO_PERSISTENCE_SECONDS:
-                stato_finale = ultimo_colore_visto
+            stato_da_pubblicare = None
+            if stato_corrente_visivo != "SPENTO":
+                last_seen_color_time = time.time()
+                stato_da_pubblicare = stato_corrente_visivo
             else:
-                stato_finale = "SPENTO"
+                if time.time() - last_seen_color_time > STATE_PERSISTENCE_SECONDS:
+                    stato_da_pubblicare = "SPENTO"
+                else:
+                    stato_da_pubblicare = stato_pubblicato
 
-            # 4. Pubblica su MQTT solo se lo stato finale è cambiato
-            if stato_finale != stato_precedente_pubblicato:
-                datetime_obj = datetime.fromtimestamp(current_time)
-                datetime_string = datetime_obj.strftime('%H:%M:%S-%d:%m:%Y')
+            if stato_da_pubblicare != stato_pubblicato:
+                stato_pubblicato = stato_da_pubblicare
+                timestamp = time.time()
+                datetime_str = time.strftime('%H:%M:%S-%d:%m:%Y', time.localtime(timestamp))
+                payload = json.dumps({"stato": stato_pubblicato, "timestamp": timestamp, "datetime_str": datetime_str})
+                print(f"Stato cambiato: {stato_pubblicato}. Invio messaggio MQTT...")
+                client.publish(MQTT_TOPIC_STATUS, payload, qos=1, retain=True)
 
-                print(f"Stato cambiato: {stato_precedente_pubblicato} -> {stato_finale}. Invio messaggio MQTT...")
-
-                payload = json.dumps({
-                    "stato": stato_finale,
-                    "timestamp": current_time,
-                    "datetime_str": datetime_string
-                })
-                client.publish(MQTT_TOPIC, payload, qos=1, retain=True)
-                stato_precedente_pubblicato = stato_finale
-
-            # 5. Debug visivo (se attivato)
-            if debug_mode:
-                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                cv2.putText(frame, f"Stato Pubblicato: {stato_finale}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-                            (255, 255, 255), 2)
-                cv2.imshow("Live Feed con ROI", frame)
-                cv2.imshow("Maschera Colore Rilevato", detected_mask)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
+            if debug:
+                cv2.imshow("Live Feed", frame)
+                cv2.imshow("Info Rilevamento", debug_info_frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'): break
             else:
                 time.sleep(0.1)
 
+    except KeyboardInterrupt:
+        print("\n🛑 Chiusura del programma in corso...")
     finally:
-        print("\n🛑 Fermo il monitoraggio e pulisco le risorse...")
+        print("🧹 Rilascio delle risorse...")
         cap.release()
         client.loop_stop()
         client.disconnect()
-        cv2.destroyAllWindows()
-        print("Uscita pulita.")
+        if debug: cv2.destroyAllWindows()
+        print("✅ Programma terminato.")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Monitoraggio semaforo per macchine BMA.")
-    parser.add_argument("--debug", action="store_true", help="Abilita le finestre di debug visivo.")
+    parser = argparse.ArgumentParser(description="Monitora lo stato di un semaforo via webcam.")
+    parser.add_argument("--debug", action="store_true", help="Mostra le finestre di debug.")
     args = parser.parse_args()
-    main(args.debug)
+    main(debug=args.debug)
 
