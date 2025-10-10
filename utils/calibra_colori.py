@@ -9,7 +9,6 @@ CAMERA_INDEX = 0
 STATES_TO_CALIBRATE = ["ROSSO", "VERDE", "SPENTO"]
 RECORDING_SECONDS = 5
 ANALYSIS_FRAME_COUNT = 30
-# <-- MODIFICA CHIAVE: Valore minimo di luminosità per uno stato "ACCESO"
 MIN_BRIGHTNESS_FOR_ON_STATE = 100
 
 # --- CONFIGURAZIONE LAYOUT DASHBOARD ---
@@ -63,6 +62,45 @@ def get_activation_threshold(video_file, hsv_range):
         return sugg_thresh
 
 
+# <-- MODIFICA CHIAVE: Funzione per il selettore di fotogrammi
+def select_frame_from_video(video_file):
+    """Apre un'interfaccia con uno slider per permettere all'utente di scegliere il fotogramma migliore."""
+    cap = cv2.VideoCapture(video_file)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if total_frames == 0:
+        return None
+
+    window_name = "Seleziona Fotogramma Migliore"
+    cv2.namedWindow(window_name)
+    cv2.createTrackbar("Timeline", window_name, 0, total_frames - 1, lambda x: None)
+
+    selected_frame = None
+
+    print("    -> Usa lo slider per trovare il fotogramma migliore.")
+    print("    -> Premi INVIO per confermare o 'q' per annullare.")
+
+    while True:
+        frame_pos = cv2.getTrackbarPos("Timeline", window_name)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_pos)
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        draw_text_with_background(frame, "Usa lo slider. Premi INVIO per confermare.", (10, 30))
+        cv2.imshow(window_name, frame)
+
+        key = cv2.waitKey(20) & 0xFF
+        if key == 13:  # Tasto INVIO
+            selected_frame = frame
+            break
+        if key == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+    return selected_frame
+
+
 def record_and_analyze(state_name, main_roi_coords):
     temp_video_file = os.path.join(SCRIPT_DIR, f"temp_{state_name}.avi")
     cap = cv2.VideoCapture(CAMERA_INDEX)
@@ -81,25 +119,34 @@ def record_and_analyze(state_name, main_roi_coords):
     cap.release();
     out.release();
     cv2.destroyWindow("Registrazione...")
-    cap = cv2.VideoCapture(temp_video_file)
-    ret, first_frame = cap.read()
-    if not ret: return None, None
-    frame_sel = first_frame.copy()
+
+    # <-- MODIFICA CHIAVE: Usa il selettore interattivo invece del primo fotogramma
+    frame_for_selection = select_frame_from_video(temp_video_file)
+    if frame_for_selection is None:
+        print("    -> Nessun fotogramma selezionato. Calibrazione annullata per questo stato.")
+        os.remove(temp_video_file)
+        return None, None
+
     x, y, w, h = main_roi_coords['x'], main_roi_coords['y'], main_roi_coords['w'], main_roi_coords['h']
-    cv2.rectangle(frame_sel, (x, y), (x + w, y + h), (0, 255, 0), 2)
-    selection = cv2.selectROI("Seleziona Campione Puro", frame_sel)
+    cv2.rectangle(frame_for_selection, (x, y), (x + w, y + h), (0, 255, 0), 2)
+    selection = cv2.selectROI("Seleziona Campione Puro", frame_for_selection)
     cv2.destroyWindow("Seleziona Campione Puro")
+
     if selection[2] == 0: os.remove(temp_video_file); return None, None
     sel_x, sel_y, sel_w, sel_h = selection
+
+    # Il resto della logica di analisi rimane quasi identico, ma ora abbiamo la certezza
+    # che il campione è stato preso da un fotogramma significativo.
+    cap = cv2.VideoCapture(temp_video_file)
     cropped_video_file = os.path.join(SCRIPT_DIR, "temp_cropped.avi")
     out_crop = cv2.VideoWriter(cropped_video_file, cv2.VideoWriter_fourcc(*'XVID'), fps, (sel_w, sel_h))
-    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     while True:
         ret, frame = cap.read()
         if not ret: break
         out_crop.write(frame[sel_y:sel_y + sel_h, sel_x:sel_x + sel_w])
     out_crop.release();
     cap.release()
+
     cap_crop = cv2.VideoCapture(cropped_video_file)
     hsv_data = []
     while True:
@@ -108,36 +155,34 @@ def record_and_analyze(state_name, main_roi_coords):
         hsv_area = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         hsv_data.extend(hsv_area.reshape(-1, 3))
     cap_crop.release()
+
     if not hsv_data: os.remove(temp_video_file); os.remove(cropped_video_file); return None, None
+
     hsv_data = np.array(hsv_data)
     mean, std = np.mean(hsv_data, axis=0), np.std(hsv_data, axis=0)
 
-    # --- MODIFICA CHIAVE: Logica con vincoli di luminosità ---
     if state_name == "SPENTO":
-        # Per lo stato SPENTO, forza bassa saturazione e luminosità
-        lower_bound = np.array([0, 0, 0])
-        upper_bound = np.minimum([179, 255, 255], mean + std * 3).astype(int)
-        upper_bound[1] = min(upper_bound[1], 80)  # Saturazione bassa
-        upper_bound[2] = min(upper_bound[2], 80)  # Luminosità bassa
-    else:  # Per ROSSO e VERDE
-        # Calcola normalmente ma poi imposta un vincolo di luminosità minima
-        lower_bound = np.maximum(0, mean - std * 1.5).astype(int)
-        upper_bound = np.minimum([179, 255, 255], mean + std * 1.5).astype(int)
-        # Forza il valore minimo di luminosità per essere considerato "ACCESO"
-        lower_bound[2] = max(lower_bound[2], MIN_BRIGHTNESS_FOR_ON_STATE)
-        print(f"    -> Vincolo luminosità minima ({MIN_BRIGHTNESS_FOR_ON_STATE}) applicato per lo stato {state_name}.")
+        lower = np.array([0, 0, 0]);
+        upper = np.minimum([179, 255, 255], mean + std * 3).astype(int)
+        upper[1] = min(upper[1], 80);
+        upper[2] = min(upper[2], 80)
+    else:
+        lower = np.maximum(0, mean - std * 1.5).astype(int)
+        upper = np.minimum([179, 255, 255], mean + std * 1.5).astype(int)
+        lower[2] = max(lower[2], MIN_BRIGHTNESS_FOR_ON_STATE)
 
-    hsv_range = {"lower": lower_bound.tolist(), "upper": upper_bound.tolist(), "mean_hsv": mean.astype(int).tolist()}
+    hsv_range = {"lower": lower.tolist(), "upper": upper.tolist(), "mean_hsv": mean.astype(int).tolist()}
     threshold = get_activation_threshold(cropped_video_file, hsv_range)
     hsv_range["threshold_percent"] = threshold
+
     os.remove(temp_video_file);
     os.remove(cropped_video_file)
-    cropped_thumbnail = first_frame[y:y + h, x:x + w]
+
+    cropped_thumbnail = frame_for_selection[y:y + h, x:x + w]
     return hsv_range, cropped_thumbnail
 
 
 # La funzione get_live_status e main rimangono identiche alla versione precedente
-# Sono omesse qui per brevità ma sono nel codice completo.
 def get_live_status(roi_frame, calibrated_data):
     if not calibrated_data or roi_frame is None or roi_frame.size == 0: return None
     hsv_frame = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2HSV)
@@ -249,3 +294,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
