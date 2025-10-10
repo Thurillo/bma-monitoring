@@ -6,7 +6,7 @@ import time
 
 # --- CONFIGURAZIONE ---
 CAMERA_INDEX = 0
-WINDOW_NAME_LIVE = "Affinamento Live (s = Salva, q = Esci)"
+WINDOW_NAME_LIVE = "Affinamento Live"  # Nome più pulito
 WINDOW_NAME_SLIDERS = "Regola Soglie %"
 
 # Percorsi
@@ -25,7 +25,6 @@ def load_config(file_path, config_name):
 
 
 def save_config(file_path, data):
-    """Salva i dati di configurazione aggiornati in formato JSON."""
     try:
         with open(file_path, 'w') as f:
             json.dump(data, f, indent=4)
@@ -37,28 +36,28 @@ def save_config(file_path, data):
 
 
 def on_trackbar(val):
-    """Funzione placeholder richiesta da OpenCV per i trackbar."""
     pass
 
 
+def draw_text_with_background(frame, text, position, font_scale=0.6, color=(255, 255, 255), bg_color=(0, 0, 0)):
+    (text_width, text_height), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
+    x, y = position
+    # Disegna un rettangolo nero leggermente più grande del testo
+    cv2.rectangle(frame, (x, y - text_height - baseline), (x + text_width + 10, y + 5), bg_color, -1)
+    cv2.putText(frame, text, (x + 5, y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, 1, cv2.LINE_AA)
+
+
 def draw_debug_overlay(frame, details, roi_coords):
-    """Disegna le informazioni di debug direttamente sul frame video."""
-    # Disegna il rettangolo della ROI
     x, y, w, h = roi_coords['x'], roi_coords['y'], roi_coords['w'], roi_coords['h']
     cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-    cv2.putText(frame, "Campo Visivo", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
-    # Scrivi le percentuali di rilevamento
     y_offset = 30
     for name, data in details.items():
         perc = data['percentage']
         thresh = data['threshold']
         text = f"{name}: {perc:.1f}% (>{thresh}%)"
         color = (0, 255, 0) if perc >= thresh else (0, 0, 255)
-
-        (text_width, text_height), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
-        cv2.rectangle(frame, (5, y_offset - text_height - 5), (10 + text_width, y_offset + 5), (0, 0, 0), -1)
-        cv2.putText(frame, text, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 1, cv2.LINE_AA)
+        draw_text_with_background(frame, text, (10, y_offset), color=color)
         y_offset += 25
 
 
@@ -82,15 +81,10 @@ def main():
         cv2.createTrackbar(f'Soglia {state_name}', WINDOW_NAME_SLIDERS, initial_threshold, 100, on_trackbar)
 
     print("🚀 Avvio strumento di affinamento soglie...")
-    print("   -> Regola gli slider e osserva l'effetto sul video.")
-    print("   -> Premi 's' per salvare le nuove soglie e uscire.")
-    print("   -> Premi 'q' per uscire senza salvare.")
 
     while True:
         ret, frame = cap.read()
-        if not ret:
-            time.sleep(0.1)
-            continue
+        if not ret: time.sleep(0.1); continue
 
         x, y, w, h = roi['x'], roi['y'], roi['w'], roi['h']
         roi_frame = frame[y:y + h, x:x + w]
@@ -99,20 +93,21 @@ def main():
 
         hsv_frame = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2HSV)
         total_pixels = roi_frame.shape[0] * roi_frame.shape[1]
-
         detection_details = {}
 
         for color_name, ranges in color_ranges.items():
             current_threshold = cv2.getTrackbarPos(f'Soglia {color_name}', WINDOW_NAME_SLIDERS)
-            lower = np.array(ranges['lower'])
-            upper = np.array(ranges['upper'])
+            lower, upper = np.array(ranges['lower']), np.array(ranges['upper'])
             mask = cv2.inRange(hsv_frame, lower, upper)
             percentage = (cv2.countNonZero(mask) / total_pixels) * 100
-
             detection_details[color_name] = {'percentage': percentage, 'threshold': current_threshold}
 
-        # <-- MODIFICA CHIAVE: Disegna direttamente sul frame originale che verrà mostrato
         draw_debug_overlay(frame, detection_details, roi)
+
+        # <-- MODIFICA CHIAVE: Istruzioni sempre visibili sul video
+        frame_height, _, _ = frame.shape
+        draw_text_with_background(frame, "s = Salva e Esci", (10, frame_height - 40), color=(0, 255, 0))
+        draw_text_with_background(frame, "q = Esci senza Salvare", (10, frame_height - 15), color=(0, 0, 255))
 
         cv2.imshow(WINDOW_NAME_LIVE, frame)
 
@@ -125,7 +120,6 @@ def main():
             for color_name in color_ranges.keys():
                 new_threshold = cv2.getTrackbarPos(f'Soglia {color_name}', WINDOW_NAME_SLIDERS)
                 color_ranges[color_name]['threshold_percent'] = new_threshold
-
             save_config(COLOR_CONFIG_FILE, color_ranges)
             break
 
