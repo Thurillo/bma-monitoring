@@ -6,7 +6,7 @@ import time
 
 # --- CONFIGURAZIONE ---
 CAMERA_INDEX = 0
-WINDOW_NAME_LIVE = "Affinamento Live"  # Nome più pulito
+WINDOW_NAME_LIVE = "Affinamento Live"
 WINDOW_NAME_SLIDERS = "Regola Soglie %"
 
 # Percorsi
@@ -42,7 +42,6 @@ def on_trackbar(val):
 def draw_text_with_background(frame, text, position, font_scale=0.6, color=(255, 255, 255), bg_color=(0, 0, 0)):
     (text_width, text_height), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
     x, y = position
-    # Disegna un rettangolo nero leggermente più grande del testo
     cv2.rectangle(frame, (x, y - text_height - baseline), (x + text_width + 10, y + 5), bg_color, -1)
     cv2.putText(frame, text, (x + 5, y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, 1, cv2.LINE_AA)
 
@@ -86,6 +85,11 @@ def main():
         ret, frame = cap.read()
         if not ret: time.sleep(0.1); continue
 
+        # Correzione dell'errore di visualizzazione:
+        # L'overlay viene disegnato su una copia per non alterare l'originale
+        # se necessario, ma qui lo disegniamo direttamente per semplicità
+        display_frame = frame.copy()
+
         x, y, w, h = roi['x'], roi['y'], roi['w'], roi['h']
         roi_frame = frame[y:y + h, x:x + w]
 
@@ -102,14 +106,13 @@ def main():
             percentage = (cv2.countNonZero(mask) / total_pixels) * 100
             detection_details[color_name] = {'percentage': percentage, 'threshold': current_threshold}
 
-        draw_debug_overlay(frame, detection_details, roi)
+        draw_debug_overlay(display_frame, detection_details, roi)
 
-        # <-- MODIFICA CHIAVE: Istruzioni sempre visibili sul video
-        frame_height, _, _ = frame.shape
-        draw_text_with_background(frame, "s = Salva e Esci", (10, frame_height - 40), color=(0, 255, 0))
-        draw_text_with_background(frame, "q = Esci senza Salvare", (10, frame_height - 15), color=(0, 0, 255))
+        frame_height, _, _ = display_frame.shape
+        draw_text_with_background(display_frame, "s = Salva e Esci", (10, frame_height - 40), color=(0, 255, 0))
+        draw_text_with_background(display_frame, "q = Esci senza Salvare", (10, frame_height - 15), color=(0, 0, 255))
 
-        cv2.imshow(WINDOW_NAME_LIVE, frame)
+        cv2.imshow(WINDOW_NAME_LIVE, display_frame)
 
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
