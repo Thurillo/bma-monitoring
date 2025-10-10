@@ -42,7 +42,7 @@ def on_trackbar(val):
 
 
 def draw_debug_overlay(frame, details, roi_coords):
-    """Disegna le informazioni di debug direttamente sul frame video (copiata da monitor_semaforo.py)."""
+    """Disegna le informazioni di debug direttamente sul frame video."""
     # Disegna il rettangolo della ROI
     x, y, w, h = roi_coords['x'], roi_coords['y'], roi_coords['w'], roi_coords['h']
     cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
@@ -54,7 +54,6 @@ def draw_debug_overlay(frame, details, roi_coords):
         perc = data['percentage']
         thresh = data['threshold']
         text = f"{name}: {perc:.1f}% (>{thresh}%)"
-        # Il colore del testo cambia in base al superamento della soglia
         color = (0, 255, 0) if perc >= thresh else (0, 0, 255)
 
         (text_width, text_height), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
@@ -75,11 +74,9 @@ def main():
         print("❌ Errore: Impossibile accedere alla webcam.")
         return
 
-    # Crea le finestre
     cv2.namedWindow(WINDOW_NAME_LIVE)
     cv2.namedWindow(WINDOW_NAME_SLIDERS)
 
-    # Crea uno slider per ogni stato nel file di configurazione
     for state_name, data in color_ranges.items():
         initial_threshold = data.get("threshold_percent", 10)
         cv2.createTrackbar(f'Soglia {state_name}', WINDOW_NAME_SLIDERS, initial_threshold, 100, on_trackbar)
@@ -106,19 +103,17 @@ def main():
         detection_details = {}
 
         for color_name, ranges in color_ranges.items():
-            # Leggi il valore attuale dello slider AD OGNI FRAME
             current_threshold = cv2.getTrackbarPos(f'Soglia {color_name}', WINDOW_NAME_SLIDERS)
-
             lower = np.array(ranges['lower'])
             upper = np.array(ranges['upper'])
             mask = cv2.inRange(hsv_frame, lower, upper)
             percentage = (cv2.countNonZero(mask) / total_pixels) * 100
 
-            # Memorizza i dati per l'overlay, usando la soglia live dallo slider
             detection_details[color_name] = {'percentage': percentage, 'threshold': current_threshold}
 
-        # Disegna l'overlay usando i dati appena calcolati
-        draw_debug_overlay(frame.copy(), detection_details, roi)
+        # <-- MODIFICA CHIAVE: Disegna direttamente sul frame originale che verrà mostrato
+        draw_debug_overlay(frame, detection_details, roi)
+
         cv2.imshow(WINDOW_NAME_LIVE, frame)
 
         key = cv2.waitKey(1) & 0xFF
@@ -127,7 +122,6 @@ def main():
             break
         elif key == ord('s'):
             print("💾 Salvataggio delle nuove soglie...")
-            # Aggiorna il dizionario con i nuovi valori finali dagli slider
             for color_name in color_ranges.keys():
                 new_threshold = cv2.getTrackbarPos(f'Soglia {color_name}', WINDOW_NAME_SLIDERS)
                 color_ranges[color_name]['threshold_percent'] = new_threshold
