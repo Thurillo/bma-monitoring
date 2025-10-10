@@ -42,14 +42,19 @@ def on_trackbar(val):
 
 
 def draw_debug_overlay(frame, details, roi_coords):
+    """Disegna le informazioni di debug direttamente sul frame video (copiata da monitor_semaforo.py)."""
+    # Disegna il rettangolo della ROI
     x, y, w, h = roi_coords['x'], roi_coords['y'], roi_coords['w'], roi_coords['h']
     cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+    cv2.putText(frame, "Campo Visivo", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
+    # Scrivi le percentuali di rilevamento
     y_offset = 30
     for name, data in details.items():
         perc = data['percentage']
         thresh = data['threshold']
-        text = f"{name}: {perc:.1f}% (Soglia: {thresh}%)"
+        text = f"{name}: {perc:.1f}% (>{thresh}%)"
+        # Il colore del testo cambia in base al superamento della soglia
         color = (0, 255, 0) if perc >= thresh else (0, 0, 255)
 
         (text_width, text_height), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
@@ -101,7 +106,7 @@ def main():
         detection_details = {}
 
         for color_name, ranges in color_ranges.items():
-            # Leggi il valore attuale dello slider
+            # Leggi il valore attuale dello slider AD OGNI FRAME
             current_threshold = cv2.getTrackbarPos(f'Soglia {color_name}', WINDOW_NAME_SLIDERS)
 
             lower = np.array(ranges['lower'])
@@ -109,9 +114,11 @@ def main():
             mask = cv2.inRange(hsv_frame, lower, upper)
             percentage = (cv2.countNonZero(mask) / total_pixels) * 100
 
+            # Memorizza i dati per l'overlay, usando la soglia live dallo slider
             detection_details[color_name] = {'percentage': percentage, 'threshold': current_threshold}
 
-        draw_debug_overlay(frame, detection_details, roi)
+        # Disegna l'overlay usando i dati appena calcolati
+        draw_debug_overlay(frame.copy(), detection_details, roi)
         cv2.imshow(WINDOW_NAME_LIVE, frame)
 
         key = cv2.waitKey(1) & 0xFF
@@ -120,7 +127,7 @@ def main():
             break
         elif key == ord('s'):
             print("💾 Salvataggio delle nuove soglie...")
-            # Aggiorna il dizionario con i nuovi valori dagli slider
+            # Aggiorna il dizionario con i nuovi valori finali dagli slider
             for color_name in color_ranges.keys():
                 new_threshold = cv2.getTrackbarPos(f'Soglia {color_name}', WINDOW_NAME_SLIDERS)
                 color_ranges[color_name]['threshold_percent'] = new_threshold
@@ -135,3 +142,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
