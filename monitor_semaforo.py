@@ -40,45 +40,60 @@ def on_connect(client, userdata, flags, rc, properties):
         print(f"❌ Connessione fallita, codice: {rc}.")
 
 
-def on_disconnect(client, userdata, rc, properties):
-    print(f"⚠️ Disconnesso dal broker MQTT con codice: {rc}.")
+# <-- MODIFICA CHIAVE: Correzione del bug MQTT ---
+# La firma della funzione ora accetta 5 argomenti, come richiesto dalla libreria
+def on_disconnect(client, userdata, flags, reason_code, properties):
+    print(f"⚠️ Disconnesso dal broker MQTT con codice: {reason_code}.")
 
 
-# <-- MODIFICA CHIAVE: La logica ora ignora la calibrazione 'SPENTO'
-def get_visual_status(roi_frame, color_ranges, debug_frame=None):
-    if roi_frame is None or roi_frame.size == 0: return "SPENTO"
+def get_visual_status(roi_frame, color_ranges):
+    if roi_frame is None or roi_frame.size == 0: return "SPENTO", {}
     hsv_frame = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2HSV)
     total_pixels = roi_frame.shape[0] * roi_frame.shape[1]
 
+    detection_details = {}
     detected_colors = []
 
-    # Cerca solo i colori "attivi" (non SPENTO)
     for color_name, ranges in color_ranges.items():
-        if color_name == "SPENTO":
-            continue
-
         lower = np.array(ranges['lower'])
         upper = np.array(ranges['upper'])
         threshold = ranges.get('threshold_percent', 10)
-
         mask = cv2.inRange(hsv_frame, lower, upper)
         percentage = (cv2.countNonZero(mask) / total_pixels) * 100
 
-        if debug_frame is not None:
-            text = f"{color_name}: {percentage:.1f}% (>{threshold}%)"
-            color = (0, 255, 0) if percentage >= threshold else (0, 0, 255)
-            cv2.putText(debug_frame, text, (10, 20 + 20 * len(detected_colors)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color,
-                        1)
+        # Salva i dettagli per il debug overlay
+        detection_details[color_name] = {'percentage': percentage, 'threshold': threshold}
 
-        if percentage >= threshold:
+        if color_name != "SPENTO" and percentage >= threshold:
             detected_colors.append({"name": color_name, "percentage": percentage})
 
-    # Se nessun colore attivo ha superato la soglia, è SPENTO
     if not detected_colors:
-        return "SPENTO"
+        return "SPENTO", detection_details
 
-    # Altrimenti, restituisce il colore attivo con la percentuale più alta
-    return max(detected_colors, key=lambda x: x['percentage'])['name']
+    best_match = max(detected_colors, key=lambda x: x['percentage'])
+    return best_match['name'], detection_details
+
+
+def draw_debug_overlay(frame, details, roi_coords):
+    """Disegna le informazioni di debug direttamente sul frame video."""
+    # Disegna il rettangolo della ROI
+    x, y, w, h = roi_coords['x'], roi_coords['y'], roi_coords['w'], roi_coords['h']
+    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+    cv2.putText(frame, "Campo Visivo", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+    # Scrivi le percentuali di rilevamento
+    y_offset = 30
+    for name, data in details.items():
+        perc = data['percentage']
+        thresh = data['threshold']
+        text = f"{name}: {perc:.1f}% (>{thresh}%)"
+        color = (0, 255, 0) if perc >= thresh else (0, 0, 255)
+
+        # Sfondo per leggibilità
+        (text_width, text_height), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
+        cv2.rectangle(frame, (5, y_offset - text_height - 5), (10 + text_width, y_offset + 5), (0, 0, 0), -1)
+        cv2.putText(frame, text, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 1, cv2.LINE_AA)
+        y_offset += 25
 
 
 def main(debug=False):
@@ -119,9 +134,7 @@ def main(debug=False):
             x, y, w, h = roi['x'], roi['y'], roi['w'], roi['h']
             roi_frame = frame[y:y + h, x:x + w]
 
-            debug_info_frame = roi_frame.copy() if debug else None
-
-            stato_corrente_visivo = get_visual_status(roi_frame, color_ranges, debug_info_frame)
+            stato_corrente_visivo, detection_details = get_visual_status(roi_frame, color_ranges)
 
             stato_da_pubblicare = None
             if stato_corrente_visivo != "SPENTO":
@@ -142,8 +155,10 @@ def main(debug=False):
                 client.publish(MQTT_TOPIC_STATUS, payload, qos=1, retain=True)
 
             if debug:
-                cv2.imshow("Live Feed", frame)
-                cv2.imshow("Info Rilevamento", debug_info_frame)
+                # <-- MODIFICA CHIAVE: Disegna l'overlay direttamente sul frame principale ---
+                draw_debug_overlay(frame, detection_details, roi)
+                cv2.imshow("Live Feed con Debug", frame)
+
                 if cv2.waitKey(1) & 0xFF == ord('q'): break
             else:
                 time.sleep(0.1)
@@ -161,7 +176,7 @@ def main(debug=False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Monitora lo stato di un semaforo via webcam.")
-    parser.add_argument("--debug", action="store_true", help="Mostra le finestre di debug.")
+    parser.add_argument("--debug", action="store_true", help="Mostra un overlay di debug sul video.")
     args = parser.parse_args()
     main(debug=args.debug)
 
