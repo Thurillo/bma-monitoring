@@ -6,7 +6,7 @@ import time
 import os
 import argparse
 from collections import deque
-from datetime import datetime  # <-- AGGIUNTO: Modulo per gestire date e ore
+from datetime import datetime
 
 # --- CONFIGURAZIONE ---
 CAMERA_INDEX = 0
@@ -57,9 +57,13 @@ def on_disconnect(client, userdata, flags, rc, properties):
 def main(debug_mode=False):
     # Caricamento configurazioni
     roi = load_config(ROI_CONFIG_FILE, "ROI")
-    color_ranges = load_config(COLOR_CONFIG_FILE, "colori")
-    if not roi or not color_ranges:
+    all_ranges = load_config(COLOR_CONFIG_FILE, "colori")
+    if not roi or not all_ranges:
         return
+
+    # MODIFICA: Separa i colori da rilevare dalla calibrazione dello stato SPENTO
+    color_ranges_to_detect = {k: v for k, v in all_ranges.items() if k != "SPENTO"}
+    print(f"Colori che verranno monitorati: {list(color_ranges_to_detect.keys())}")
 
     # Inizializzazione client MQTT
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=MACHINE_ID)
@@ -101,7 +105,8 @@ def main(debug_mode=False):
             stato_istantaneo = "SPENTO"
             detected_mask = np.zeros(roi_frame.shape[:2], dtype="uint8")
 
-            for color_name, ranges in color_ranges.items():
+            # MODIFICA: Itera solo sui colori attivi
+            for color_name, ranges in color_ranges_to_detect.items():
                 lower = np.array(ranges["lower"])
                 upper = np.array(ranges["upper"])
                 mask = cv2.inRange(hsv_frame, lower, upper)
@@ -131,20 +136,16 @@ def main(debug_mode=False):
 
             # 4. Pubblica su MQTT solo se lo stato finale è cambiato
             if stato_finale != stato_precedente_pubblicato:
-                # --- MODIFICA: Creazione del payload con data leggibile ---
                 datetime_obj = datetime.fromtimestamp(current_time)
-                #datetime_string = datetime_obj.strftime('%H:%M:%S-%d:%m:%Y')  # Formato richiesto
-                datetime_string = datetime_obj.strftime('%Y:%m:%d %H:%M:%S')  # Formato richiesto
+                datetime_string = datetime_obj.strftime('%H:%M:%S-%d:%m:%Y')
 
                 print(f"Stato cambiato: {stato_precedente_pubblicato} -> {stato_finale}. Invio messaggio MQTT...")
 
                 payload = json.dumps({
                     "stato": stato_finale,
                     "timestamp": current_time,
-                    "datetime_str": datetime_string  # <-- NUOVO CAMPO
+                    "datetime_str": datetime_string
                 })
-                # --- FINE MODIFICA ---
-
                 client.publish(MQTT_TOPIC, payload, qos=1, retain=True)
                 stato_precedente_pubblicato = stato_finale
 
@@ -174,3 +175,4 @@ if __name__ == "__main__":
     parser.add_argument("--debug", action="store_true", help="Abilita le finestre di debug visivo.")
     args = parser.parse_args()
     main(args.debug)
+
