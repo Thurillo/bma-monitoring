@@ -13,7 +13,6 @@ ANALYSIS_FRAME_COUNT = 30
 # --- CONFIGURAZIONE LAYOUT DASHBOARD ---
 PANEL_WIDTH = 250
 PADDING = 10
-# <-- MODIFICA: Altezze fisse per i componenti per un layout più pulito
 TITLE_AREA_HEIGHT = 40
 THUMBNAIL_AREA_HEIGHT = 120
 COLOR_SWATCH_AREA_HEIGHT = 60
@@ -26,8 +25,7 @@ ROI_CONFIG_FILE = os.path.join(CONFIG_DIR, "roi_semaforo.json")
 
 
 # --- Funzioni di supporto (load_roi, draw_text_with_background, etc.) ---
-# Queste funzioni rimangono identiche e sono omesse per brevità nel commento,
-# ma sono presenti nel codice completo.
+# Omesse per brevità nel commento, ma presenti nel codice.
 def load_roi():
     if not os.path.exists(ROI_CONFIG_FILE):
         print(f"❌ Errore: File ROI '{ROI_CONFIG_FILE}' non trovato. Esegui prima configura_zona.py.")
@@ -71,8 +69,6 @@ def get_activation_threshold(video_file, hsv_range):
 
 
 def record_and_analyze(state_name, main_roi_coords):
-    # Questa funzione rimane identica, la ometto per brevità.
-    # Il suo codice è incluso nel blocco completo.
     temp_video_file = os.path.join(SCRIPT_DIR, f"temp_{state_name}.avi")
     cap = cv2.VideoCapture(CAMERA_INDEX)
     if not cap.isOpened(): return None, None
@@ -128,7 +124,7 @@ def record_and_analyze(state_name, main_roi_coords):
     else:
         lower = np.maximum(0, mean - std * 1.5).astype(int);
         upper = np.minimum([179, 255, 255], mean + std * 1.5).astype(int)
-    hsv_range = {"lower": lower.tolist(), "upper": upper.tolist()}
+    hsv_range = {"lower": lower.tolist(), "upper": upper.tolist(), "mean_hsv": mean.astype(int).tolist()}
     threshold = get_activation_threshold(cropped_video_file, hsv_range)
     hsv_range["threshold_percent"] = threshold
     os.remove(temp_video_file);
@@ -176,12 +172,7 @@ def main():
     calibrated_data = {}
     sample_thumbnails = {}
 
-    # <-- MODIFICA CHIAVE: Dizionario per i colori dei titoli
-    TITLE_COLORS = {
-        "ROSSO": (0, 0, 255),  # BGR per il rosso
-        "VERDE": (0, 255, 0),  # BGR per il verde
-        "SPENTO": (255, 255, 255)  # BGR per il bianco
-    }
+    TITLE_COLORS = {"ROSSO": (0, 0, 255), "VERDE": (0, 255, 0), "SPENTO": (255, 255, 255)}
 
     print("--- Dashboard di Calibrazione e Verifica Live ---")
 
@@ -205,18 +196,15 @@ def main():
         panel = dashboard[0:dashboard_height, frame_width:dashboard_width]
         panel.fill(40)
 
-        # <-- MODIFICA CHIAVE: Layout del pannello più strutturato
         section_height = dashboard_height // len(STATES_TO_CALIBRATE)
 
         for i, state_name in enumerate(STATES_TO_CALIBRATE):
             section_y_start = i * section_height
 
-            # --- Area Titolo ---
             title_y = section_y_start + TITLE_AREA_HEIGHT // 2
             title_color = TITLE_COLORS.get(state_name, (255, 255, 255))
             cv2.putText(panel, state_name, (PADDING, title_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, title_color, 2)
 
-            # Spia di stato (logica identica a prima, posizionata nel titolo)
             indicator_pos = (PANEL_WIDTH - PADDING - 15, title_y - 5)
             indicator_color = (80, 80, 80)
             if live_detected_state == state_name:
@@ -229,7 +217,6 @@ def main():
             cv2.circle(panel, indicator_pos, 10, indicator_color, -1)
             cv2.circle(panel, indicator_pos, 10, (255, 255, 255), 1)
 
-            # --- Area Thumbnail ---
             thumb_y_start = section_y_start + TITLE_AREA_HEIGHT
             thumb_placeholder = panel[
                 thumb_y_start: thumb_y_start + panel_thumb_height, PADDING: PADDING + panel_thumb_width]
@@ -240,10 +227,12 @@ def main():
             else:
                 thumb_placeholder[:, :] = (80, 80, 80)
 
-            # --- Area Swatch Colore ---
             color_y_start = thumb_y_start + panel_thumb_height + PADDING
+
+            # <-- QUESTA È LA RIGA CORRETTA
             color_placeholder = panel[
-                color_y_start: color_y_start + COLOR_SWATCH_HEIGHT, PADDING: PANEL_WIDTH - PADDING]
+                color_y_start: color_y_start + COLOR_SWATCH_AREA_HEIGHT, PADDING: PANEL_WIDTH - PADDING]
+
             if state_name in calibrated_data:
                 mean_hsv = np.uint8([[calibrated_data[state_name].get('mean_hsv', [0, 0, 80])]])
                 mean_bgr = cv2.cvtColor(mean_hsv, cv2.COLOR_HSV2BGR)[0][0]
@@ -265,7 +254,6 @@ def main():
             break
 
         if state_to_record:
-            # La logica di registrazione è identica, la ometto per brevità
             cap.release();
             cv2.destroyWindow("Dashboard di Calibrazione e Verifica")
             hsv_range, thumbnail = record_and_analyze(state_to_record, roi)
