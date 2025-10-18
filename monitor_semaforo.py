@@ -5,19 +5,18 @@ import json
 import time
 import os
 import argparse
-from collections import deque # Importa la struttura dati 'deque'
+from collections import deque
 
 # --- CONFIGURAZIONE ---
 CAMERA_INDEX = 0
 
 # --- CONFIGURAZIONE LOGICA DI RILEVAMENTO ---
-STATE_PERSISTENCE_SECONDS = 2.5 
-# <-- MODIFICA CHIAVE: Nuovi parametri per il buffer di stabilità
-STABILITY_BUFFER_SIZE = 10  # Numero di frame da tenere in memoria (circa 0.5s)
-CONFIRMATION_THRESHOLD = 6  # Quanti frame devono confermare il nuovo stato (maggioranza)
+# <-- MODIFICA CHIAVE: Aumentato a 3 secondi come richiesto
+STATE_PERSISTENCE_SECONDS = 3.0 
+# Buffer per stabilizzare il rilevamento del colore dominante
+STABILITY_BUFFER_SIZE = 15 
 
 # --- CONFIGURAZIONE MQTT (e Percorsi) ---
-# ... (Nessuna modifica qui, omesso per brevità)
 MQTT_BROKER = "192.168.20.163"
 MQTT_PORT = 1883
 MQTT_USERNAME = "shima"
@@ -29,9 +28,8 @@ CONFIG_DIR = os.path.join(SCRIPT_DIR, "config")
 ROI_CONFIG_FILE = os.path.join(CONFIG_DIR, "roi_semaforo.json")
 COLOR_CONFIG_FILE = os.path.join(CONFIG_DIR, "color_ranges.json")
 
-# --- Funzioni di supporto (load_config, on_connect, on_disconnect, get_visual_status, draw_debug_overlay) ---
-# Queste funzioni rimangono identiche alla versione precedente e sono omesse qui per brevità.
-# Il codice completo le include.
+# --- Funzioni di supporto (load_config, on_connect, etc.) ---
+# Omesse per brevità nel commento, ma presenti nel codice completo.
 def load_config(file_path, config_name):
     if not os.path.exists(file_path): return None
     with open(file_path, 'r') as f: return json.load(f)
@@ -60,7 +58,7 @@ def get_visual_status(roi_frame, color_ranges):
     if not detected: return "SPENTO", details
     return max(detected, key=lambda x: x['percentage'])['name'], details
 
-def draw_debug_overlay(frame, details, roi_coords):
+def draw_debug_overlay(frame, details, roi_coords, stabilized_state):
     x, y, w, h = roi_coords['x'], roi_coords['y'], roi_coords['w'], roi_coords['h']
     cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
     y_offset = 30
@@ -72,6 +70,9 @@ def draw_debug_overlay(frame, details, roi_coords):
         cv2.rectangle(frame, (5, y_offset - th - 5), (10 + tw, y_offset + 5), (0,0,0), -1)
         cv2.putText(frame, text, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 1, cv2.LINE_AA)
         y_offset += 25
+    # Mostra lo stato stabilizzato per un debug migliore
+    cv2.putText(frame, f"Stato Stabile: {stabilized_state}", (10, frame.shape[0] - 20), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
 def main(debug=False):
     roi = load_config(ROI_CONFIG_FILE, "ROI")
@@ -82,20 +83,14 @@ def main(debug=False):
     client.on_connect, client.on_disconnect = on_connect, on_disconnect
     client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
     
-    try:
-        client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        client.loop_start()
-    except Exception as e:
-        print(f"❌ Errore MQTT: {e}"); return
+    try: client.connect(MQTT_BROKER, MQTT_PORT, 60); client.loop_start()
+    except Exception as e: print(f"❌ Errore MQTT: {e}"); return
     
     cap = cv2.VideoCapture(CAMERA_INDEX)
-    if not cap.isOpened():
-        print("❌ Errore Webcam."); client.loop_stop(); return
+    if not cap.isOpened(): print("❌ Errore Webcam."); client.loop_stop(); return
     
     print("🚀 Avvio monitoraggio... (Premi Ctrl+C per fermare)")
 
-    # <-- MODIFICA CHIAVE: Inizializzazione del buffer e dello stato confermato
-    stato_confermato = "SPENTO"
     stato_pubblicato = None
     last_seen_color_time = 0
     visual_state_buffer = deque(maxlen=STABILITY_BUFFER_SIZE)
@@ -109,27 +104,30 @@ def main(debug=False):
             roi_frame = frame[y:y+h, x:x+w]
             
             stato_corrente_visivo, detection_details = get_visual_status(roi_frame, color_ranges)
-            
-            # Aggiungi lo stato visivo corrente al buffer
             visual_state_buffer.append(stato_corrente_visivo)
 
-            # --- NUOVA LOGICA DI CONFERMA STATO ---
-            potential_new_state = stato_corrente_visivo
-            if potential_new_state != stato_confermato:
-                # Un cambio di stato è possibile, verifichiamo se è stabile
-                if visual_state_buffer.count(potential_new_state) >= CONFIRMATION_THRESHOLD:
-                    # Il nuovo stato è stato visto abbastanza volte di seguito, lo confermiamo
-                    stato_confermato = potential_new_state
+            # --- NUOVA LOGICA DI STATO DOMINANTE ---
+            rosso_count = visual_state_buffer.count("ROSSO")
+            verde_count = visual_state_buffer.count("VERDE")
+
+            stato_stabile_corrente = "SPENTO"
+            if rosso_count > verde_count:
+                stato_stabile_corrente = "ROSSO"
+            elif verde_count > rosso_count:
+                stato_stabile_corrente = "VERDE"
             
-            # La logica di persistenza per lo SPENTO si basa ora sullo stato CONFERMATO
+            # --- LOGICA DI PERSISTENZA BASATA SULLO STATO DOMINANTE ---
             stato_da_pubblicare = None
-            if stato_confermato != "SPENTO":
+            if stato_stabile_corrente != "SPENTO":
+                # Se il colore dominante è ROSSO o VERDE, aggiorna il timer
                 last_seen_color_time = time.time()
-                stato_da_pubblicare = stato_confermato
+                stato_da_pubblicare = stato_stabile_corrente
             else:
+                # Se il colore dominante è SPENTO, controlla da quanto tempo non vediamo colori
                 if time.time() - last_seen_color_time > STATE_PERSISTENCE_SECONDS:
                     stato_da_pubblicare = "SPENTO"
                 else:
+                    # Non è passato abbastanza tempo, manteniamo l'ultimo stato pubblicato
                     stato_da_pubblicare = stato_pubblicato
             
             if stato_da_pubblicare != stato_pubblicato:
@@ -145,22 +143,16 @@ def main(debug=False):
                 client.publish(MQTT_TOPIC_STATUS, payload, qos=1, retain=True)
             
             if debug:
-                draw_debug_overlay(frame, detection_details, roi)
-                # Aggiungi lo stato confermato all'overlay per un debug migliore
-                cv2.putText(frame, f"Stato Confermato: {stato_confermato}", (10, frame.shape[0] - 20), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                draw_debug_overlay(frame, detection_details, roi, stato_stabile_corrente)
                 cv2.imshow("Live Feed con Debug", frame)
                 if cv2.waitKey(1) & 0xFF == ord('q'): break
             else:
                 time.sleep(0.1)
                 
-    except KeyboardInterrupt:
-        print("\n🛑 Chiusura del programma...")
+    except KeyboardInterrupt: print("\n🛑 Chiusura del programma...")
     finally:
         print("🧹 Rilascio risorse...")
-        cap.release()
-        client.loop_stop()
-        client.disconnect()
+        cap.release(); client.loop_stop(); client.disconnect()
         if debug: cv2.destroyAllWindows()
         print("✅ Programma terminato.")
 
@@ -169,4 +161,6 @@ if __name__ == "__main__":
     parser.add_argument("--debug", action="store_true", help="Mostra un overlay di debug sul video.")
     args = parser.parse_args()
     main(debug=args.debug)
+
+
 
