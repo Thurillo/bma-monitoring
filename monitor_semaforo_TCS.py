@@ -241,6 +241,18 @@ def main():
         print("Impossibile avviare. Controlla hardware e configurazione.")
         return
 
+    # --- NUOVA FASE DI RISCALDAMENTO ---
+    # Esegue alcune letture a vuoto per far stabilizzare il sensore
+    # prima di iniziare il monitoraggio vero e proprio.
+    print("Avvio... (Riscaldamento sensore...)")
+    warmup_readings = 10  # Esegue 10 letture a vuoto
+    for i in range(warmup_readings):
+        _ = leggi_rgb_stabilizzato(sensor)  # Legge e scarta il valore
+        time.sleep(0.05)  # Piccola pausa
+        print(f"   Riscaldamento... {i + 1}/{warmup_readings}", end="\r")
+    print("\n✅ Riscaldamento completato.")
+    # --- FINE FASE DI RISCALDAMENTO ---
+
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=MACHINE_ID)
     client.on_connect, client.on_disconnect = on_connect, on_disconnect
     client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
@@ -263,7 +275,7 @@ def main():
     # Inizializza il buffer con "SPENTO"
     for _ in range(BUFFER_SIZE): visual_state_buffer.append("SPENTO")
 
-    print("Avvio monitoraggio...")  # Messaggio di avvio
+    print("Monitoraggio attivo.")  # Messaggio di avvio
 
     try:
         while True:
