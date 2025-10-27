@@ -38,18 +38,18 @@ LOOP_SLEEP_TIME = 0.01  # Era 0.05 (Ridotto per velocità)
 # Secondi di "SPENTO" prima di pubblicare lo stato SPENTO
 STATE_PERSISTENCE_SECONDS = 0.5  # Era 3.0
 # Soglia per il lampeggio: % di letture "SPENTO" nel buffer per definirlo "ATTESA"
-BLINK_THRESHOLD_PERCENT = 0.15  # (15%)
+# --- MODIFICA: Reso più permissivo per stabilizzare ATTESA ---
+BLINK_THRESHOLD_PERCENT = 0.10  # (10%, era 15%)
 
 # --- NUOVA LOGICA ANTI-TRANSIZIONE ---
 # Per essere "ATTESA", il buffer deve avere almeno questo numero di cambi (V->S o S->V)
 # Questo previene che una transizione V->S (che ha 1 solo cambio) venga letta come ATTESA.
-MIN_TRANSITIONS_FOR_BLINK = 3
+# --- MODIFICA: Reso più permissivo per stabilizzare ATTESA ---
+MIN_TRANSITIONS_FOR_BLINK = 2  # Era 3
 
-# --- NUOVA LOGICA DI COOLDOWN ---
-# Se abbiamo visto ROSSO, ignoriamo "ATTESA" per questo numero di secondi,
-# perché è quasi sicuramente una transizione R->V sporca.
-# (Deve essere > del tempo di riempimento del buffer: 20 * ~0.27s = ~5.4s)
-ROSSO_COOLDOWN_SECONDS = 7.0
+# --- RIMOSSA LOGICA DI COOLDOWN ---
+# La logica MIN_TRANSITIONS_FOR_BLINK è sufficiente
+# e la logica di Cooldown causava falsi positivi.
 
 # --- CONFIGURAZIONE MQTT (e Percorsi) ---
 MQTT_BROKER = "192.168.20.163"
@@ -182,9 +182,6 @@ def analyze_state_buffer(buffer):
     spento_count = buffer.count("SPENTO")
 
     # REGOLA 1: Se c'è ROSSO nel buffer, è sempre ROSSO (massima priorità)
-    # Questa è stata la causa di alcuni bug di transizione, ma
-    # la priorità del ROSSO è un requisito. La gestiamo con un
-    # cooldown DOPO che questo stato scompare.
     if rosso_count > 0:
         return "ROSSO"
 
@@ -195,7 +192,6 @@ def analyze_state_buffer(buffer):
         # È un candidato al lampeggio (contiene sia VERDE che SPENTO)?
         if percent_spento >= BLINK_THRESHOLD_PERCENT:
 
-            # --- NUOVA LOGICA ---
             # Controlla se è un VERO lampeggio (tanti cambi V->S)
             # o solo una transizione (1-2 cambi V->S)
             transitions = 0
@@ -205,6 +201,7 @@ def analyze_state_buffer(buffer):
                         (buffer[i] == "SPENTO" and buffer[i + 1] == "VERDE"):
                     transitions += 1
 
+            # --- MODIFICA: Abbassato a 2 per essere più permissivi
             if transitions >= MIN_TRANSITIONS_FOR_BLINK:
                 # Ci sono abbastanza cambi -> È un VERO LAMPEGGIO
                 return "ATTESA"
@@ -283,9 +280,8 @@ def main():
 
     stato_pubblicato = None
     last_published_change_time = 0
-    # --- NUOVA VARIABILE PER COOLDOWN ---
-    # Inizializza a un valore molto nel passato per permettere ATTESA all'avvio
-    last_seen_rosso_time = time.time() - ROSSO_COOLDOWN_SECONDS * 2
+
+    # --- VARIABILE DI COOLDOWN RIMOSSA ---
 
     print("Monitoraggio attivo.")  # Messaggio di avvio
 
@@ -297,21 +293,9 @@ def main():
 
             stato_composito = analyze_state_buffer(visual_state_buffer)
 
-            # --- BLOCCO LOGICA DI COOLDOWN ---
-            if stato_composito == "ROSSO":
-                # Se vediamo ROSSO, aggiorniamo il timer
-                last_seen_rosso_time = time.time()
-
-            # Se lo stato è ATTESA, controlla se è un falso positivo post-ROSSO
-            if stato_composito == "ATTESA":
-                if time.time() - last_seen_rosso_time < ROSSO_COOLDOWN_SECONDS:
-                    # È una transizione R->V sporca.
-                    # Ignora ATTESA e decidi tra VERDE o SPENTO
-                    if visual_state_buffer.count("VERDE") > visual_state_buffer.count("SPENTO"):
-                        stato_composito = "VERDE"
-                    else:
-                        stato_composito = "SPENTO"
-            # --- FINE BLOCCO LOGICA DI COOLDOWN ---
+            # --- BLOCCO LOGICA DI COOLDOWN RIMOSSO ---
+            # La logica è ora gestita interamente da
+            # MIN_TRANSITIONS_FOR_BLINK in analyze_state_buffer
 
             # --- Logica di Pubblicazione ---
             stato_da_pubblicare = None
