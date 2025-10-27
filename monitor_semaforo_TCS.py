@@ -38,7 +38,9 @@ LOOP_SLEEP_TIME = 0.01  # Era 0.05 (Ridotto per velocità)
 # Secondi di "SPENTO" prima di pubblicare lo stato SPENTO
 STATE_PERSISTENCE_SECONDS = 0.5  # Era 3.0
 # Soglia per il lampeggio: % di letture "SPENTO" nel buffer per definirlo "ATTESA"
-BLINK_THRESHOLD_PERCENT = 0.3  # (30%)
+# --- MODIFICA PER STABILIZZARE 'ATTESA' ---
+# Ridotto da 0.3 (30%) a 0.15 (15%) per evitare oscillazioni
+BLINK_THRESHOLD_PERCENT = 0.15  # (15%)
 
 # --- CONFIGURAZIONE MQTT (e Percorsi) ---
 MQTT_BROKER = "192.168.20.163"
