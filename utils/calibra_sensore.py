@@ -6,6 +6,7 @@ Questo script esegue la calibrazione e MOSTRA LA LETTURA LIVE contemporaneamente
 utilizzando il multithreading.
 
 Carica i valori esistenti all'avvio per permettere calibrazioni parziali.
+Mostra i valori salvati nel menu per un confronto live.
 """
 
 import time
@@ -169,14 +170,42 @@ def stampa_menu():
     print("--- MENU CALIBRAZIONE (con Lettura Live) ---")
     print("=" * 50)
 
-    # Mostra cosa è già stato calibrato (caricato o appena fatto)
-    stato_verde = "✅ CALIBRATO" if "verde" in dati_calibrazione_temporanei else "❌ DA FARE"
-    stato_rosso = "✅ CALIBRATO" if "non_verde" in dati_calibrazione_temporanei else "❌ DA FARE"
-    stato_spento = "✅ CALIBRATO" if "buio" in dati_calibrazione_temporanei else "❌ DA FARE"
+    # --- MODIFICA CHIAVE: Formattazione valori salvati ---
 
-    print(f"1. Campiona 'Verde' (luce fisso o lampeggiante)       {stato_verde}")
-    print(f"2. Campiona 'Rosso' (luce fisso o lampeggiante)       {stato_rosso}")
-    print(f"3. Campiona 'Spento' (fisso)                          {stato_spento}")
+    # --- VERDE ---
+    val_verde_str = ""
+    if "verde" in dati_calibrazione_temporanei:
+        rgb = dati_calibrazione_temporanei["verde"]
+        val_verde_str = f"(R:{rgb['R']}, G:{rgb['G']}, B:{rgb['B']})"
+        stato_verde = "✅ CALIBRATO"
+    else:
+        stato_verde = "❌ DA FARE"
+
+    # --- ROSSO ---
+    val_rosso_str = ""
+    if "non_verde" in dati_calibrazione_temporanei:
+        rgb = dati_calibrazione_temporanei["non_verde"]
+        val_rosso_str = f"(R:{rgb['R']}, G:{rgb['G']}, B:{rgb['B']})"
+        stato_rosso = "✅ CALIBRATO"
+    else:
+        stato_rosso = "❌ DA FARE"
+
+    # --- SPENTO ---
+    val_spento_str = ""
+    if "buio" in dati_calibrazione_temporanei:
+        rgb = dati_calibrazione_temporanei["buio"]
+        val_spento_str = f"(R:{rgb['R']}, G:{rgb['G']}, B:{rgb['B']})"
+        stato_spento = "✅ CALIBRATO"
+    else:
+        stato_spento = "❌ DA FARE"
+
+    # Stampa il menu con la formattazione allineata
+    print(f"1. Campiona 'Verde' (luce fisso o lampeggiante)")
+    print(f"   {stato_verde:<13} {val_verde_str:<25}")
+    print(f"2. Campiona 'Rosso' (luce fisso o lampeggiante)")
+    print(f"   {stato_rosso:<13} {val_rosso_str:<25}")
+    print(f"3. Campiona 'Spento' (fisso)")
+    print(f"   {stato_spento:<13} {val_spento_str:<25}")
     print("---------------------------------------------")
     print("5. Salva calibrazione su file ed Esci")
     print("6. Esci SENZA salvare")
