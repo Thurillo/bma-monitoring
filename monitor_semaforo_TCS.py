@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
 """
-Monitoraggio Semaforo BMA - Versione con Sensore TCS34725
+Monitoraggio Semaforo BMA - Versione con Sensore TCS34725 (Logica 4 Stati)
 
-Questo script sostituisce la logica OpenCV (webcam) con un sensore
-di colore TCS34725 per rilevare lo stato del semaforo.
+Questo script rileva 4 stati analizzando un buffer di letture nel tempo
+per distinguere tra colori fissi e lampeggianti.
 
 Logica:
 1. Carica i valori RGB di riferimento (verde, non_verde, buio)
    dal file di calibrazione.
-2. Legge in loop i valori RGB stabilizzati dal sensore.
-3. Calcola quale dei 3 stati di riferimento è il più "vicino"
-   (distanza euclidea) al valore letto.
-4. Applica la logica di persistenza (3 secondi) identica alla versione
-   con webcam.
-5. Pubblica lo stato ("ROSSO", "VERDE", "SPENTO") sul topic MQTT.
+2. Legge in loop i valori RGB istantanei.
+3. Trova lo stato istantaneo più vicino (ROSSO, VERDE, SPENTO).
+4. Memorizza gli ultimi N stati istantanei in un buffer.
+5. Analizza il buffer per determinare lo stato composito:
+   - "ROSSO": Se c'è anche un solo ROSSO nel buffer.
+   - "ATTESA": Se ci sono VERDE e SPENTO (ma non ROSSO).
+   - "VERDE": Se c'è solo VERDE (e non ROSSO o SPENTO).
+   - "SPENTO": Se c'è solo SPENTO.
+6. Applica la logica di persistenza per lo stato SPENTO.
+7. Pubblica lo stato finale sul topic MQTT.
 """
 
 import paho.mqtt.client as mqtt
@@ -22,6 +26,7 @@ import time
 import os
 import math
 import sys
+from collections import deque  # Importiamo deque per il buffer
 
 # Import per il sensore TCS34725
 try:
@@ -34,9 +39,10 @@ except ImportError:
     sys.exit(1)
 
 # --- CONFIGURAZIONE LOGICA DI RILEVAMENTO ---
-# Manteniamo la stessa logica di persistenza della versione precedente
-STATE_PERSISTENCE_SECONDS = 3.0
-CAMPIONI_PER_LETTURA = 10  # Numero di letture da mediare per un valore stabile
+STATE_PERSISTENCE_SECONDS = 3.0  # Persistenza per lo stato SPENTO
+CAMPIONI_PER_LETTURA = 10  # AUMENTATO: 10 campioni per lettura (prima era 5)
+BUFFER_SIZE = 20  # AUMENTATO: buffer di 20 letture (prima era 15)
+LOOP_SLEEP_TIME = 0.1  # Intervallo tra le letture (più veloce per rilevare lampeggi)
 
 # --- CONFIGURAZIONE MQTT (e Percorsi) ---
 MQTT_BROKER = "192.168.20.163"
@@ -48,12 +54,10 @@ MQTT_TOPIC_STATUS = f"bma/{MACHINE_ID}/semaforo/stato"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_DIR = os.path.join(SCRIPT_DIR, "config")
-# Il nuovo file di configurazione
 CALIBRAZIONE_FILE = os.path.join(CONFIG_DIR, "calibrazione.json")
 
 
 # --- Funzioni di supporto MQTT ---
-
 def on_connect(client, userdata, flags, rc, properties):
     if rc == 0:
         print("✅ Connesso al broker MQTT!")
@@ -162,16 +166,16 @@ def calcola_distanza_rgb(rgb1, rgb2):
     return math.sqrt(dr * dr + dg * dg + db * db)
 
 
-def get_sensor_status(current_rgb, calibrated_data):
+def get_instant_status(current_rgb, calibrated_data):
     """
-    Identifica lo stato confrontando il valore RGB attuale
-    con i valori calibrati.
+    Identifica lo stato ISTANTANEO confrontando il valore RGB attuale
+    con i valori calibrati. Ritorna "ROSSO", "VERDE" o "SPENTO".
     """
 
     # Valori di riferimento dal file JSON
     ref_verde = calibrated_data['verde']
-    ref_non_verde = calibrated_data['non_verde']
-    ref_buio = calibrated_data['buio']
+    ref_non_verde = calibrated_data['non_verde']  # Questo è il nostro ROSSO
+    ref_buio = calibrated_data['buio']  # Questo è il nostro SPENTO
 
     # Calcola le distanze
     dist_verde = calcola_distanza_rgb(current_rgb, ref_verde)
@@ -181,17 +185,42 @@ def get_sensor_status(current_rgb, calibrated_data):
     # Trova la distanza minima
     distanze = {
         "VERDE": dist_verde,
-        "ROSSO": dist_non_verde,  # Mappiamo 'non_verde' a 'ROSSO'
-        "SPENTO": dist_buio  # Mappiamo 'buio' a 'SPENTO'
+        "ROSSO": dist_non_verde,
+        "SPENTO": dist_buio
     }
 
     # Restituisce il nome dello stato con la distanza minore
     stato_piu_vicino = min(distanze, key=distanze.get)
-
-    # print(f"Debug: R={current_rgb['R']} G={current_rgb['G']} B={current_rgb['B']}")
-    # print(f"  Dist_V: {dist_verde:.1f}, Dist_R: {dist_non_verde:.1f}, Dist_S: {dist_buio:.1f} -> {stato_piu_vicino}")
-
     return stato_piu_vicino
+
+
+def analyze_state_buffer(buffer):
+    """
+    Analizza il buffer di stati istantanei per determinare
+    lo stato composito (ROSSO, VERDE, ATTESA, SPENTO).
+    """
+    count_rosso = buffer.count("ROSSO")
+    count_verde = buffer.count("VERDE")
+    count_spento = buffer.count("SPENTO")
+
+    # Regola 1: Priorità al ROSSO
+    # (Come richiesto: "lampeggiante o fisso, sempre ROSSO")
+    if count_rosso > 0:
+        return "ROSSO"
+
+    # Regola 2: ATTESA (Verde lampeggiante)
+    # (Se non c'è ROSSO, ma ci sono sia VERDE che SPENTO)
+    if count_verde > 0 and count_spento > 0:
+        return "ATTESA"
+
+    # Regola 3: VERDE (Verde fisso)
+    # (Se c'è VERDE, ma non ROSSO (già controllato) e non SPENTO)
+    if count_verde > 0 and count_spento == 0:
+        return "VERDE"
+
+    # Regola 4: SPENTO
+    # (Se non c'è né ROSSO né VERDE)
+    return "SPENTO"
 
 
 def main():
@@ -224,36 +253,44 @@ def main():
         print(f"❌ Errore critico MQTT: {e}")
         return
 
-    print("🚀 Avvio monitoraggio con sensore TCS34725... (Premi Ctrl+C per fermare)")
+    print("🚀 Avvio monitoraggio con sensore TCS34725 (Logica 4 Stati)... (Premi Ctrl+C per fermare)")
 
     # Variabili per la logica di persistenza
     stato_pubblicato = None
     last_seen_color_time = 0
 
+    # Il buffer degli stati istantanei
+    state_buffer = deque(maxlen=BUFFER_SIZE)
+
     try:
         while True:
-            # 4. Leggi il sensore
-            current_rgb = get_stabilized_rgb(sensor)
+            # 4. Leggi il sensore (usiamo letture più veloci)
+            current_rgb = get_stabilized_rgb(sensor, campioni=CAMPIONI_PER_LETTURA)
 
-            # 5. Determina lo stato
-            # Questa è la nuova funzione che sostituisce get_visual_status
-            stato_rilevato = get_sensor_status(current_rgb, calibrated_data)
+            # 5. Determina lo stato ISTANTANEO
+            stato_istantaneo = get_instant_status(current_rgb, calibrated_data)
 
-            # 6. Applica la logica di persistenza (identica alla versione webcam)
+            # 6. Aggiungi al buffer
+            state_buffer.append(stato_istantaneo)
+
+            # 7. Analizza il buffer per ottenere lo stato COMPOSITO
+            stato_composito = analyze_state_buffer(state_buffer)
+
+            # 8. Applica la logica di persistenza (solo per lo SPENTO)
             stato_da_pubblicare = None
-            if stato_rilevato != "SPENTO":
-                # Se il colore è ROSSO o VERDE, aggiorna il timer
+            if stato_composito != "SPENTO":
+                # Se il colore è ROSSO, VERDE o ATTESA, aggiorna il timer
                 last_seen_color_time = time.time()
-                stato_da_pubblicare = stato_rilevato
+                stato_da_pubblicare = stato_composito
             else:
-                # Se il colore è SPENTO, controlla da quanto tempo non vediamo colori
+                # Se lo stato composito è SPENTO, controlla da quanto tempo
                 if time.time() - last_seen_color_time > STATE_PERSISTENCE_SECONDS:
                     stato_da_pubblicare = "SPENTO"
                 else:
-                    # Non è passato abbastanza tempo, manteniamo l'ultimo stato pubblicato
+                    # Non è passato abbastanza tempo, manteniamo l'ultimo stato pubblicato (che non era SPENTO)
                     stato_da_pubblicare = stato_pubblicato
 
-            # 7. Pubblica su MQTT (solo se lo stato cambia)
+            # 9. Pubblica su MQTT (solo se lo stato cambia)
             if stato_da_pubblicare != stato_pubblicato:
                 stato_pubblicato = stato_da_pubblicare
                 timestamp = time.time()
@@ -265,11 +302,12 @@ def main():
                     "timestamp": timestamp,
                     "datetime_str": datetime_str
                 })
-                print(f"Stato Rilevato: {stato_rilevato} -> Stato Pubblicato: {stato_pubblicato}")
+                print(
+                    f"Buffer: [{''.join(s[0] for s in state_buffer)}] -> Stato: {stato_composito} -> Pubblicato: {stato_pubblicato}")
                 client.publish(MQTT_TOPIC_STATUS, payload, qos=1, retain=True)
 
-            # Pausa per non sovraccaricare il bus I2C e MQTT
-            time.sleep(0.2)
+            # Pausa per il ciclo di loop
+            time.sleep(LOOP_SLEEP_TIME)
 
     except KeyboardInterrupt:
         print("\n🛑 Chiusura del programma...")
@@ -282,3 +320,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
