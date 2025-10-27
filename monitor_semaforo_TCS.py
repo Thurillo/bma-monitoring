@@ -241,17 +241,21 @@ def main():
         print("Impossibile avviare. Controlla hardware e configurazione.")
         return
 
-    # --- NUOVA FASE DI RISCALDAMENTO ---
-    # Esegue alcune letture a vuoto per far stabilizzare il sensore
-    # prima di iniziare il monitoraggio vero e proprio.
-    print("Avvio... (Riscaldamento sensore...)")
-    warmup_readings = 10  # Esegue 10 letture a vuoto
-    for i in range(warmup_readings):
-        _ = leggi_rgb_stabilizzato(sensor)  # Legge e scarta il valore
-        time.sleep(0.05)  # Piccola pausa
-        print(f"   Riscaldamento... {i + 1}/{warmup_readings}", end="\r")
-    print("\n✅ Riscaldamento completato.")
-    # --- FINE FASE DI RISCALDAMENTO ---
+    # --- NUOVA FASE DI RISCALDAMENTO E INIZIALIZZAZIONE BUFFER ---
+    # Esegue letture per riempire il buffer e stabilizzare il sensore.
+    # Questo sostituisce il riempimento artificiale con "SPENTO".
+    print(f"Avvio... (Inizializzazione buffer... {BUFFER_SIZE} letture)")
+    visual_state_buffer = deque(maxlen=BUFFER_SIZE)
+
+    for i in range(BUFFER_SIZE):
+        stato_iniziale, _ = get_instant_status(sensor, calibrated_data)
+        visual_state_buffer.append(stato_iniziale)
+        print(f"   Lettura... {i + 1}/{BUFFER_SIZE} -> {stato_iniziale}   ", end="\r")
+        # Usiamo lo sleep del loop principale per coerenza
+        time.sleep(LOOP_SLEEP_TIME)
+
+    print("\n✅ Inizializzazione completata.")
+    # --- FINE FASE DI INIZIALIZZAZIONE ---
 
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=MACHINE_ID)
     client.on_connect, client.on_disconnect = on_connect, on_disconnect
@@ -270,10 +274,9 @@ def main():
 
     stato_pubblicato = None
     last_published_change_time = 0
-    visual_state_buffer = deque(maxlen=BUFFER_SIZE)
 
-    # Inizializza il buffer con "SPENTO"
-    for _ in range(BUFFER_SIZE): visual_state_buffer.append("SPENTO")
+    # Il buffer è GIA' pieno di letture reali.
+    # Non serve più inizializzarlo a SPENTO.
 
     print("Monitoraggio attivo.")  # Messaggio di avvio
 
