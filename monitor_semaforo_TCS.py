@@ -1,89 +1,56 @@
 #!/usr/bin/env python3
 """
-Monitoraggio Semaforo BMA - Versione con Sensore TCS34725 (Logica 4 Stati)
+MONITOR SEMAFORO - Versione TCS34725 (4 Stati)
 
-Questo script rileva 4 stati analizzando un buffer di letture nel tempo
-per distinguere tra colori fissi e lampeggianti.
+Questo script sostituisce la logica OpenCV con un sensore TCS34725.
+Implementa una logica a 4 stati (ROSSO, VERDE, ATTESA, SPENTO) analizzando
+un buffer di letture per distinguere tra fisso e lampeggiante.
 
-Logica:
-1. Carica i valori RGB di riferimento (verde, non_verde, buio)
-   dal file di calibrazione.
-2. Legge in loop i valori RGB istantanei.
-3. Trova lo stato istantaneo più vicino (ROSSO, VERDE, SPENTO).
-4. Memorizza gli ultimi N stati istantanei in un buffer.
-5. Analizza il buffer per determinare lo stato composito:
-   - "ROSSO": Se c'è anche un solo ROSSO nel buffer.
-   - "ATTESA": Se ci sono VERDE e SPENTO (ma non ROSSO).
-   - "VERDE": Se c'è solo VERDE (e non ROSSO o SPENTO).
-   - "SPENTO": Se c'è solo SPENTO.
-6. Applica la logica di persistenza per lo stato SPENTO.
-7. Pubblica lo stato finale sul topic MQTT.
+Versione stabile con output di log su singola riga (con timestamp).
 """
 
-import paho.mqtt.client as mqtt
-import json
 import time
-import os
-import math
+import json
 import sys
-from collections import deque  # Importiamo deque per il buffer
+import os
+from collections import deque
+from datetime import datetime  # <-- Importato per il timestamp
 
-# Import per il sensore TCS34725
 try:
+    import paho.mqtt.client as mqtt
     import board
     import busio
     import adafruit_tcs34725
 except ImportError:
-    print("❌ Errore: Librerie del sensore non trovate.")
-    print("   Esegui: pip install adafruit-blinka adafruit-circuitpython-tcs34725")
+    print("❌ Errore: Librerie richieste non trovate.")
+    print("   Assicurati di averle installate da 'requirements.txt'")
     sys.exit(1)
 
 # --- CONFIGURAZIONE LOGICA DI RILEVAMENTO ---
-STATE_PERSISTENCE_SECONDS = 3.0  # Persistenza per lo stato SPENTO
-CAMPIONI_PER_LETTURA = 10  # AUMENTATO: 10 campioni per lettura (prima era 5)
-BUFFER_SIZE = 20  # AUMENTATO: buffer di 20 letture (prima era 15)
-LOOP_SLEEP_TIME = 0.1  # Intervallo tra le letture (più veloce per rilevare lampeggi)
+# Numero di campioni da mediare per una singola lettura (più alto = più stabile)
+CAMPIONI_PER_LETTURA = 10
+# Numero di letture da tenere in memoria (più alto = analisi più lunga)
+BUFFER_SIZE = 20
+# Pausa tra i cicli di lettura
+LOOP_SLEEP_TIME = 0.1
+# Secondi di "SPENTO" prima di pubblicare lo stato SPENTO
+STATE_PERSISTENCE_SECONDS = 3.0
+# Soglia per il lampeggio: % di letture "SPENTO" nel buffer per definirlo "ATTESA"
+BLINK_THRESHOLD_PERCENT = 0.3  # (30%)
 
 # --- CONFIGURAZIONE MQTT (e Percorsi) ---
 MQTT_BROKER = "192.168.20.163"
 MQTT_PORT = 1883
 MQTT_USERNAME = "shima"
 MQTT_PASSWORD = "shima"
-MACHINE_ID = "macchina_01_TCS"
+MACHINE_ID = "macchina_01"
 MQTT_TOPIC_STATUS = f"bma/{MACHINE_ID}/semaforo/stato"
-
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_DIR = os.path.join(SCRIPT_DIR, "config")
-CALIBRAZIONE_FILE = os.path.join(CONFIG_DIR, "calibrazione.json")
+CALIBRATION_FILE = os.path.join(CONFIG_DIR, "calibrazione.json")
 
 
-# --- Funzioni di supporto MQTT ---
-def on_connect(client, userdata, flags, rc, properties):
-    if rc == 0:
-        print("✅ Connesso al broker MQTT!")
-    else:
-        print(f"❌ Connessione MQTT fallita: {rc}.")
-
-
-def on_disconnect(client, userdata, flags, reason_code, properties):
-    print(f"⚠️ Disconnesso da MQTT: {reason_code}.")
-
-
-def load_config(file_path, config_name):
-    if not os.path.exists(file_path):
-        print(f"❌ Errore: File di configurazione '{config_name}' non trovato.")
-        print(f"   Percorso cercato: {file_path}")
-        print("   Esegui prima lo script 'utils/calibra_sensore.py'!")
-        return None
-    try:
-        with open(file_path, 'r') as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"Errore nel caricamento di {file_path}: {e}")
-        return None
-
-
-# --- Funzioni Hardware Sensore ---
+# --- Inizializzazione Hardware ---
 
 def inizializza_sensore():
     """Inizializza il sensore TCS34725."""
@@ -91,222 +58,216 @@ def inizializza_sensore():
     try:
         i2c = busio.I2C(board.SCL, board.SDA)
         sensor = adafruit_tcs34725.TCS34725(i2c)
-        # Configura parametri (puoi affinarli se necessario)
         sensor.integration_time = 150
         sensor.gain = 4
         print("✅ Sensore inizializzato.")
         return sensor
     except Exception as e:
         print(f"❌ ERRORE: Impossibile trovare il sensore TCS34725.")
-        print(f"   Controlla i collegamenti I2C.")
         print(f"   Dettagli: {e}")
         return None
 
 
+def carica_calibrazione():
+    """Carica i dati di calibrazione dal file JSON."""
+    if not os.path.exists(CALIBRATION_FILE):
+        print(f"❌ ERRORE: File di calibrazione non trovato!")
+        print(f"   Esegui prima 'utils/calibra_sensore.py'")
+        print(f"   Percorso cercato: {CALIBRATION_FILE}")
+        return None
+
+    try:
+        with open(CALIBRATION_FILE, 'r') as f:
+            data = json.load(f)
+        if "verde" not in data or "non_verde" not in data or "buio" not in data:
+            print("❌ ERRORE: File di calibrazione incompleto.")
+            return None
+
+        print(f"✅ Dati di calibrazione caricati da '{CALIBRATION_FILE}'")
+        return data
+    except Exception as e:
+        print(f"❌ ERRORE durante la lettura del file JSON: {e}")
+        return None
+
+
+# --- Funzioni di Lettura e Analisi ---
+
 def leggi_rgb_attuale(sens):
-    """Esegue una singola lettura RGB, con fallback (presa da calibra_ambiente_reale.py)."""
+    """Esegue una singola lettura RGB, con fallback."""
     try:
         result = sens.color_rgb_bytes
-        if len(result) >= 3:
-            return result[:3]  # R, G, B
+        if len(result) >= 3: return result[:3]
     except Exception:
-        pass  # Tenta con il metodo raw
-
-    try:  # Fallback
+        pass
+    try:
         raw = sens.color_raw
-        r = min(255, int(raw[0] / 256))
-        g = min(255, int(raw[1] / 256))
-        b = min(255, int(raw[2] / 256))
-        return r, g, b
+        return min(255, int(raw[0] / 256)), min(255, int(raw[1] / 256)), min(255, int(raw[2] / 256))
     except Exception:
-        return 0, 0, 0  # Errore grave
+        return 0, 0, 0
 
 
-def get_stabilized_rgb(sensor, campioni=CAMPIONI_PER_LETTURA):
-    """
-    Legge il sensore 'campioni' volte e restituisce i valori medi R, G, B.
-    """
-    tot_r, tot_g, tot_b = 0, 0, 0
-    letture_valide = 0
-
+def leggi_rgb_stabilizzato(sensor, campioni=CAMPIONI_PER_LETTURA):
+    """Legge il sensore 'campioni' volte e restituisce i valori medi R, G, B."""
+    tot_r, tot_g, tot_b, letture_valide = 0, 0, 0, 0
     for _ in range(campioni):
-        r, g, b = 0, 0, 0
         try:
             r, g, b = leggi_rgb_attuale(sensor)
-            letture_valide += 1
-            tot_r += r
-            tot_g += g
+            letture_valide += 1;
+            tot_r += r;
+            tot_g += g;
             tot_b += b
         except Exception:
-            pass  # Ignora lettura fallita
+            pass
+        time.sleep(0.01)  # Piccola pausa tra i campioni
 
-        time.sleep(0.01)  # Pausa minima tra letture
+    if letture_valide == 0: return {"R": 0, "G": 0, "B": 0}
+    return {"R": int(tot_r / letture_valide), "G": int(tot_g / letture_valide), "B": int(tot_b / letture_valide)}
 
-    if letture_valide == 0:
-        return {"R": 0, "G": 0, "B": 0}  # Ritorna buio in caso di errore
-
-    # Calcola la media
-    avg_r = int(tot_r / letture_valide)
-    avg_g = int(tot_g / letture_valide)
-    avg_b = int(tot_b / letture_valide)
-
-    return {"R": avg_r, "G": avg_g, "B": avg_b}
-
-
-# --- NUOVA LOGICA DI RILEVAMENTO ---
 
 def calcola_distanza_rgb(rgb1, rgb2):
+    """Calcola la distanza Euclidea tra due colori RGB."""
+    r1, g1, b1 = rgb1['R'], rgb1['G'], rgb1['B']
+    r2, g2, b2 = rgb2['R'], rgb2['G'], rgb2['B']
+    return ((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2) ** 0.5
+
+
+def get_instant_status(sensor, calib_data):
     """
-    Calcola la distanza Euclidea tra due colori RGB.
-    rgb1 e rgb2 sono dizionari {"R": val, "G": val, "B": val}
+    Legge il sensore e determina lo stato istantaneo (ROSSO, VERDE, SPENTO)
+    in base alla distanza minima dai valori calibrati.
+
+    MODIFICATO: Restituisce (stato, rgb_letto) - Anche se rgb_letto non è usato qui, lo teniamo
     """
-    dr = rgb1['R'] - rgb2['R']
-    dg = rgb1['G'] - rgb2['G']
-    db = rgb1['B'] - rgb2['B']
-    return math.sqrt(dr * dr + dg * dg + db * db)
+    rgb_medio = leggi_rgb_stabilizzato(sensor)
 
+    if not rgb_medio: return "SPENTO", {"R": 0, "G": 0, "B": 0}
 
-def get_instant_status(current_rgb, calibrated_data):
-    """
-    Identifica lo stato ISTANTANEO confrontando il valore RGB attuale
-    con i valori calibrati. Ritorna "ROSSO", "VERDE" o "SPENTO".
-    """
+    dist_verde = calcola_distanza_rgb(rgb_medio, calib_data['verde'])
+    dist_rosso = calcola_distanza_rgb(rgb_medio, calib_data['non_verde'])
+    dist_buio = calcola_distanza_rgb(rgb_medio, calib_data['buio'])
 
-    # Valori di riferimento dal file JSON
-    ref_verde = calibrated_data['verde']
-    ref_non_verde = calibrated_data['non_verde']  # Questo è il nostro ROSSO
-    ref_buio = calibrated_data['buio']  # Questo è il nostro SPENTO
-
-    # Calcola le distanze
-    dist_verde = calcola_distanza_rgb(current_rgb, ref_verde)
-    dist_non_verde = calcola_distanza_rgb(current_rgb, ref_non_verde)
-    dist_buio = calcola_distanza_rgb(current_rgb, ref_buio)
-
-    # Trova la distanza minima
     distanze = {
         "VERDE": dist_verde,
-        "ROSSO": dist_non_verde,
+        "ROSSO": dist_rosso,
         "SPENTO": dist_buio
     }
 
-    # Restituisce il nome dello stato con la distanza minore
     stato_piu_vicino = min(distanze, key=distanze.get)
-    return stato_piu_vicino
+    return stato_piu_vicino, rgb_medio
 
 
 def analyze_state_buffer(buffer):
     """
-    Analizza il buffer di stati istantanei per determinare
-    lo stato composito (ROSSO, VERDE, ATTESA, SPENTO).
+    Analizza il buffer delle letture per determinare lo stato composito
+    (ROSSO, VERDE, ATTESA, SPENTO).
     """
-    count_rosso = buffer.count("ROSSO")
-    count_verde = buffer.count("VERDE")
-    count_spento = buffer.count("SPENTO")
+    rosso_count = buffer.count("ROSSO")
+    verde_count = buffer.count("VERDE")
+    spento_count = buffer.count("SPENTO")
 
-    # Regola 1: Priorità al ROSSO
-    # (Come richiesto: "lampeggiante o fisso, sempre ROSSO")
-    if count_rosso > 0:
+    # REGOLA 1: Se c'è ROSSO nel buffer, è sempre ROSSO (massima priorità)
+    if rosso_count > 0:
         return "ROSSO"
 
-    # Regola 2: ATTESA (Verde lampeggiante)
-    # (Se non c'è ROSSO, ma ci sono sia VERDE che SPENTO)
-    if count_verde > 0 and count_spento > 0:
-        return "ATTESA"
+    # REGOLA 2: Se c'è VERDE e non c'è ROSSO
+    if verde_count > 0:
+        # Controlla se è lampeggiante (ATTESA)
+        # Calcola la % di "SPENTO" nel buffer
+        percent_spento = spento_count / len(buffer)
+        if percent_spento >= BLINK_THRESHOLD_PERCENT:
+            return "ATTESA"
+        else:
+            return "VERDE"
 
-    # Regola 3: VERDE (Verde fisso)
-    # (Se c'è VERDE, ma non ROSSO (già controllato) e non SPENTO)
-    if count_verde > 0 and count_spento == 0:
-        return "VERDE"
-
-    # Regola 4: SPENTO
-    # (Se non c'è né ROSSO né VERDE)
+    # REGOLA 3: Se non c'è né ROSSO né VERDE, è SPENTO
     return "SPENTO"
 
 
-def main():
-    # 1. Carica la configurazione del sensore
-    calibrated_data = load_config(CALIBRAZIONE_FILE, "Calibrazione Sensore")
-    if not calibrated_data:
-        return  # Errore già stampato da load_config
+# --- Funzioni MQTT ---
 
-    # Controlla che il file json sia valido
-    if 'verde' not in calibrated_data or 'non_verde' not in calibrated_data or 'buio' not in calibrated_data:
-        print("❌ Errore: Il file 'calibrazione.json' è incompleto.")
-        print("   Assicurati che contenga le chiavi 'verde', 'non_verde' e 'buio'.")
+def on_connect(client, userdata, flags, rc, properties):
+    if rc == 0:
+        print("✅ Connesso al broker MQTT!")
+    else:
+        print(f"❌ Connessione MQTT fallita, codice: {rc}.")
+
+
+def on_disconnect(client, userdata, flags, reason_code, properties):
+    print(f"⚠️ Disconnesso dal broker MQTT. {reason_code}")
+
+
+# --- Ciclo Principale ---
+
+def main():
+    sensor = inizializza_sensore()
+    calibrated_data = carica_calibrazione()
+    if not sensor or not calibrated_data:
+        print("Impossibile avviare. Controlla hardware e configurazione.")
         return
 
-    # 2. Inizializza il sensore
-    sensor = inizializza_sensore()
-    if not sensor:
-        return  # Errore già stampato
-
-    # 3. Connetti a MQTT
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=MACHINE_ID)
-    client.on_connect = on_connect
-    client.on_disconnect = on_disconnect
+    client.on_connect, client.on_disconnect = on_connect, on_disconnect
     client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
 
     try:
         client.connect(MQTT_BROKER, MQTT_PORT, 60)
         client.loop_start()
     except Exception as e:
-        print(f"❌ Errore critico MQTT: {e}")
+        print(f"❌ Errore di connessione MQTT iniziale: {e}")
         return
 
-    print("🚀 Avvio monitoraggio con sensore TCS34725 (Logica 4 Stati)... (Premi Ctrl+C per fermare)")
-
-    # Variabili per la logica di persistenza
     stato_pubblicato = None
-    last_seen_color_time = 0
+    last_published_change_time = 0
+    visual_state_buffer = deque(maxlen=BUFFER_SIZE)
 
-    # Il buffer degli stati istantanei
-    state_buffer = deque(maxlen=BUFFER_SIZE)
+    # Inizializza il buffer con "SPENTO"
+    for _ in range(BUFFER_SIZE): visual_state_buffer.append("SPENTO")
+
+    print("Avvio monitoraggio...")  # Messaggio di avvio
 
     try:
         while True:
-            # 4. Leggi il sensore (usiamo letture più veloci)
-            current_rgb = get_stabilized_rgb(sensor, campioni=CAMPIONI_PER_LETTURA)
+            # --- Lettura e Analisi ---
+            stato_corrente, rgb_corrente = get_instant_status(sensor, calibrated_data)
+            visual_state_buffer.append(stato_corrente)
 
-            # 5. Determina lo stato ISTANTANEO
-            stato_istantaneo = get_instant_status(current_rgb, calibrated_data)
+            stato_composito = analyze_state_buffer(visual_state_buffer)
 
-            # 6. Aggiungi al buffer
-            state_buffer.append(stato_istantaneo)
-
-            # 7. Analizza il buffer per ottenere lo stato COMPOSITO
-            stato_composito = analyze_state_buffer(state_buffer)
-
-            # 8. Applica la logica di persistenza (solo per lo SPENTO)
+            # --- Logica di Pubblicazione ---
             stato_da_pubblicare = None
             if stato_composito != "SPENTO":
-                # Se il colore è ROSSO, VERDE o ATTESA, aggiorna il timer
-                last_seen_color_time = time.time()
+                # Se lo stato è ROSSO, VERDE o ATTESA, pubblicalo subito
                 stato_da_pubblicare = stato_composito
+                # Aggiorna il timer solo se lo stato *cambia*
+                if stato_composito != stato_pubblicato:
+                    last_published_change_time = time.time()
             else:
-                # Se lo stato composito è SPENTO, controlla da quanto tempo
-                if time.time() - last_seen_color_time > STATE_PERSISTENCE_SECONDS:
+                # Se lo stato è SPENTO, applica la persistenza
+                if time.time() - last_published_change_time > STATE_PERSISTENCE_SECONDS:
                     stato_da_pubblicare = "SPENTO"
                 else:
-                    # Non è passato abbastanza tempo, manteniamo l'ultimo stato pubblicato (che non era SPENTO)
+                    # Non è passato abbastanza tempo, mantieni l'ultimo stato pubblicato
                     stato_da_pubblicare = stato_pubblicato
 
-            # 9. Pubblica su MQTT (solo se lo stato cambia)
             if stato_da_pubblicare != stato_pubblicato:
                 stato_pubblicato = stato_da_pubblicare
+                # Aggiorna il timer solo quando pubblichiamo un *cambio* reale
+                last_published_change_time = time.time()
+
                 timestamp = time.time()
+                # --- MODIFICA RICHIESTA ---
+                # Usiamo 'datetime_str' sia per il payload che per la stampa
                 datetime_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(timestamp))
 
                 payload = json.dumps({
-                    "stato": stato_pubblicato,
-                    "machine_id": MACHINE_ID,
-                    "timestamp": timestamp,
-                    "datetime_str": datetime_str
+                    "stato": stato_pubblicato, "machine_id": MACHINE_ID,
+                    "timestamp": timestamp, "datetime_str": datetime_str
                 })
-                print(
-                    f"Buffer: [{''.join(s[0] for s in state_buffer)}] -> Stato: {stato_composito} -> Pubblicato: {stato_pubblicato}")
                 client.publish(MQTT_TOPIC_STATUS, payload, qos=1, retain=True)
 
-            # Pausa per il ciclo di loop
+                # Stampa il log con il timestamp
+                print(f"[{datetime_str}] Stato Pubblicato: {stato_pubblicato}. Invio messaggio MQTT...")
+
             time.sleep(LOOP_SLEEP_TIME)
 
     except KeyboardInterrupt:
@@ -320,5 +281,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
