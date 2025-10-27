@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 """
-SCRIPT DI CALIBRAZIONE MANUALE (Ambiente Reale)
+SCRIPT DI CALIBRAZIONE MANUALE (Ambiente Reale) - Versione "Tutto in Uno"
 
-Questo script è pensato per calibrare il sensore in un ambiente reale
-dove i LED sono controllati da macchine esterne (NON da questo Raspberry).
+Questo script esegue la calibrazione e MOSTRA LA LETTURA LIVE contemporaneamente
+utilizzando il multithreading.
 
-L'utente dice allo script cosa sta guardando (verde, rosso, buio)
-e lo script campiona i valori RGB corrispondenti.
-
-I dati vengono salvati in ../config/calibrazione.json
+L'utente vede i valori RGB in tempo reale mentre naviga il menu.
 """
 
 import time
 import json
 import sys
 import os
+import threading  # Importato per la lettura live in background
 
 try:
     import board
@@ -111,24 +109,50 @@ def leggi_rgb_stabilizzato(sensor, campioni=CAMPIONI_PER_LETTURA):
     return {"R": avg_r, "G": avg_g, "B": avg_b}
 
 
+# --- NUOVA FUNZIONE PER THREAD LIVE ---
+
+def _live_feed_worker(sensor, stop_event):
+    """
+    Funzione eseguita in un thread separato per mostrare
+    la lettura live senza bloccare il menu principale.
+    """
+    print("Avvio lettura live in background...")
+    try:
+        while not stop_event.is_set():
+            rgb = leggi_rgb_attuale(sensor)
+            # Stampa sulla stessa riga (\r) per un output pulito
+            # Aggiungiamo spazi alla fine per pulire la riga precedente
+            print(f"   Lettura Live: R={rgb[0]:<3} G={rgb[1]:<3} B={rgb[2]:<3}   ", end="\r")
+            # Controlla l'evento di stop ogni 0.1 secondi
+            stop_event.wait(0.1)
+    except Exception:
+        pass  # Il thread termina se c'è un errore (es. sensore scollegato)
+    finally:
+        # Pulisce la riga prima di uscire
+        print(" " * 50, end="\r")
+        print("Lettura live fermata.")
+
+
 # --- Funzioni Menu ---
 
 def stampa_menu():
     """Mostra il menu delle opzioni e lo stato della calibrazione."""
+    # Pulisce la console per ridisegnare il menu
+    # os.system('clear') # Rimuovere se dà fastidio
     print("\n" + "=" * 50)
-    print("--- MENU CALIBRAZIONE MANUALE AMBIENTE REALE ---")
+    print("--- MENU CALIBRAZIONE (con Lettura Live) ---")
     print("=" * 50)
 
     # Mostra cosa è già stato calibrato in questa sessione
     stato_verde = "✅ CALIBRATO" if "verde" in dati_calibrazione_temporanei else "❌ DA FARE"
-    stato_non_verde = "✅ CALIBRATO" if "non_verde" in dati_calibrazione_temporanei else "❌ DA FARE"
-    stato_buio = "✅ CALIBRATO" if "buio" in dati_calibrazione_temporanei else "❌ DA FARE"
+    stato_rosso = "✅ CALIBRATO" if "non_verde" in dati_calibrazione_temporanei else "❌ DA FARE"
+    stato_spento = "✅ CALIBRATO" if "buio" in dati_calibrazione_temporanei else "❌ DA FARE"
 
-    print(f"1. Campiona 'VERDE' (luce fissa)       {stato_verde}")
-    print(f"2. Campiona 'NON-VERDE' (luce fissa)   {stato_non_verde}")
-    print(f"3. Campiona 'BUIO' (luce spenta)       {stato_buio}")
+    print(f"1. Campiona 'Verde' (luce fisso o lampeggiante)       {stato_verde}")
+    print(f"2. Campiona 'Rosso' (luce fisso o lampeggiante)       {stato_rosso}")
+    print(f"3. Campiona 'Spento' (fisso)                          {stato_spento}")
     print("---------------------------------------------")
-    print("4. Mostra lettura sensore in tempo reale (per debug)")
+    # L'opzione 4 è stata rimossa perché la lettura live è SEMPRE attiva
     print("5. Salva calibrazione su file ed Esci")
     print("6. Esci SENZA salvare")
     print("=" * 50)
@@ -140,15 +164,15 @@ def salva_file_calibrazione():
     # Controlla se abbiamo tutti i dati
     if not all(k in dati_calibrazione_temporanei for k in ("verde", "non_verde", "buio")):
         print("\n❌ ERRORE: Impossibile salvare.")
-        print("   Devi prima campionare TUTTI e 3 i valori (Verde, Non-Verde e Buio).")
+        print("   Devi prima campionare TUTTI e 3 i valori (Verde, Rosso e Spento).")
         input("   Premi INVIO per tornare al menu...")
         return False
 
     # Mostra un riepilogo
     print("\n--- RIEPILOGO CALIBRAZIONE ---")
-    print(f"  VERDE:     {dati_calibrazione_temporanei['verde']}")
-    print(f"  NON-VERDE: {dati_calibrazione_temporanei['non_verde']}")
-    print(f"  BUIO:      {dati_calibrazione_temporanei['buio']}")
+    print(f"  Verde:           {dati_calibrazione_temporanei['verde']}")
+    print(f"  Rosso (non_verde): {dati_calibrazione_temporanei['non_verde']}")
+    print(f"  Spento (buio):     {dati_calibrazione_temporanei['buio']}")
     print("------------------------------")
 
     conferma = input(f"Salvare questi valori in '{FILE_CALIBRAZIONE}'? (s/n): ").lower()
@@ -170,21 +194,6 @@ def salva_file_calibrazione():
         return False
 
 
-def debug_lettura_live(sensor):
-    """Mostra i valori letti dal sensore in tempo reale."""
-    print("\n--- LETTURA LIVE (DEBUG) ---")
-    print("Posiziona il sensore e osserva i valori.")
-    print("Premi CTRL+C per tornare al menu principale.")
-    try:
-        while True:
-            rgb = leggi_rgb_attuale(sensor)
-            # Stampa sulla stessa riga (\r) per un output pulito
-            print(f"   Lettura: R={rgb[0]:<3} G={rgb[1]:<3} B={rgb[2]:<3}   ", end="\r")
-            time.sleep(0.1)
-    except KeyboardInterrupt:
-        print("\nFine lettura live.")
-
-
 # --- Ciclo Principale ---
 
 def main():
@@ -193,59 +202,85 @@ def main():
         sys.exit(1)  # Esce se il sensore non è trovato
 
     print(f"\nIMPORTANTE: I dati verranno salvati in '{FILE_CALIBRAZIONE}'")
-    print("Posiziona il sensore in modo che 'veda' le luci")
-    print("della macchina che vuoi calibrare.")
+    print("Posiziona il sensore in modo che 'veda' le luci.")
 
-    while True:
-        stampa_menu()
-        scelta = input("Inserisci la tua scelta (1-6): ")
+    try:
+        while True:
+            # --- Blocco Lettura Live ---
+            # 1. Crea un "segnale" per dire al thread quando fermarsi
+            stop_live_feed = threading.Event()
+            # 2. Crea e avvia il thread in background
+            feed_thread = threading.Thread(
+                target=_live_feed_worker,
+                args=(sensor, stop_live_feed),
+                daemon=True  # Il thread muore se lo script principale muore
+            )
+            feed_thread.start()
 
-        if scelta == '1':
-            print("\n--- 1. Campiona VERDE ---")
-            print("Ora fai in modo che la macchina mostri la luce VERDE FISSA.")
-            input("Quando è pronta, premi INVIO per avviare il campionamento...")
-            valore = leggi_rgb_stabilizzato(sensor)
-            dati_calibrazione_temporanei["verde"] = valore
-            print(f"✅ 'Verde' registrato: {valore}")
-            time.sleep(1)
+            # 3. Stampa il menu
+            stampa_menu()
 
-        elif scelta == '2':
-            print("\n--- 2. Campiona NON-VERDE ---")
-            print("Ora fai in modo che la macchina mostri la luce NON-VERDE (Rossa/Gialla) FISSA.")
-            input("Quando è pronta, premi INVIO per avviare il campionamento...")
-            valore = leggi_rgb_stabilizzato(sensor)
-            dati_calibrazione_temporanei["non_verde"] = valore
-            print(f"✅ 'Non-Verde' registrato: {valore}")
-            time.sleep(1)
+            # 4. Attendi l'input dell'utente (blocca il thread principale)
+            #    (Il thread in background continua a stampare)
+            scelta = input("Inserisci la tua scelta (1-3, 5-6): ")
 
-        elif scelta == '3':
-            print("\n--- 3. Campiona BUIO ---")
-            print("Ora fai in modo che la macchina spenga la luce (stato BUIO).")
-            input("Quando è pronta, premi INVIO per avviare il campionamento...")
-            valore = leggi_rgb_stabilizzato(sensor)
-            dati_calibrazione_temporanei["buio"] = valore
-            print(f"✅ 'Buio' registrato: {valore}")
-            time.sleep(1)
+            # 5. Ferma il thread in background
+            #    (Diamo l'input, quindi la lettura live deve fermarsi
+            #     per non sovrapporsi alle prossime istruzioni)
+            print("\nFermo la lettura live per l'operazione...")
+            stop_live_feed.set()  # Invia il segnale di stop
+            feed_thread.join()  # Attende che il thread termini
 
-        elif scelta == '4':
-            debug_lettura_live(sensor)
+            # --- Blocco Gestione Scelta ---
+            if scelta == '1':
+                print("\n--- 1. Campiona Verde ---")
+                print("Ora fai in modo che la macchina mostri la luce Verde (fissa o lampeggiante).")
+                print("IMPORTANTE: campiona il momento in cui la luce è ACCESA.")
+                input("Quando è pronta, premi INVIO per avviare il campionamento...")
+                valore = leggi_rgb_stabilizzato(sensor)
+                dati_calibrazione_temporanei["verde"] = valore
+                print(f"✅ 'Verde' registrato: {valore}")
+                time.sleep(1)
 
-        elif scelta == '5':
-            # La funzione 'salva_file_calibrazione' gestisce tutto
-            # e ritorna True se il salvataggio è riuscito e dobbiamo uscire.
-            if salva_file_calibrazione():
+            elif scelta == '2':
+                print("\n--- 2. Campiona Rosso ---")
+                print("Ora fai in modo che la macchina mostri la luce Rossa (fissa o lampeggiante).")
+                print("IMPORTANTE: campiona il momento in cui la luce è ACCESA.")
+                input("Quando è pronta, premi INVIO per avviare il campionamento...")
+                valore = leggi_rgb_stabilizzato(sensor)
+                dati_calibrazione_temporanei["non_verde"] = valore
+                print(f"✅ 'Rosso' (salvato come 'non_verde') registrato: {valore}")
+                time.sleep(1)
+
+            elif scelta == '3':
+                print("\n--- 3. Campiona Spento ---")
+                print("Ora fai in modo che la macchina spenga la luce (stato Spento fisso).")
+                input("Quando è pronta, premi INVIO per avviare il campionamento...")
+                valore = leggi_rgb_stabilizzato(sensor)
+                dati_calibrazione_temporanei["buio"] = valore
+                print(f"✅ 'Spento' (salvato come 'buio') registrato: {valore}")
+                time.sleep(1)
+
+            elif scelta == '5':
+                if salva_file_calibrazione():
+                    break  # Esce dal loop while True
+
+            elif scelta == '6':
+                print("\nUscita senza salvataggio.")
                 break  # Esce dal loop while True
 
-        elif scelta == '6':
-            print("\nUscita senza salvataggio.")
-            break  # Esce dal loop while True
+            else:
+                print("Scelta non valida. Riprova.")
+                time.sleep(1)
 
-        else:
-            print("Scelta non valida. Inserisci un numero da 1 a 6.")
-            time.sleep(1)
+            # Alla fine del loop, il thread live verrà ricreato e ripartirà
 
-    print("Programma di calibrazione terminato.")
+    except KeyboardInterrupt:
+        print("\n🛑 Uscita forzata.")
+    finally:
+        print("Programma di calibrazione terminato.")
 
 
 if __name__ == "__main__":
     main()
+
