@@ -27,13 +27,13 @@ except ImportError:
     sys.exit(1)
 
 # --- CONFIGURAZIONE LOGICA DI RILEVAMENTO ---
-# --- MODIFICHE PER REATTIVITA' < 6s ---
+# --- MODIFICHE PER REATTIVITA' < 6s E CATTURA LAMPEGGIO ---
 # Numero di campioni da mediare per una singola lettura (più alto = più stabile)
-CAMPIONI_PER_LETTURA = 2  # Era 10
+CAMPIONI_PER_LETTURA = 1  # Era 2 (Ridotto per velocità)
 # Numero di letture da tenere in memoria (più alto = analisi più lunga)
-BUFFER_SIZE = 10  # Era 20
+BUFFER_SIZE = 20  # Era 10 (Aumentato per stabilità)
 # Pausa tra i cicli di lettura
-LOOP_SLEEP_TIME = 0.05  # Era 0.1
+LOOP_SLEEP_TIME = 0.01  # Era 0.05 (Ridotto per velocità)
 # -----------------------------------------
 # Secondi di "SPENTO" prima di pubblicare lo stato SPENTO
 STATE_PERSISTENCE_SECONDS = 0.5  # Era 3.0
