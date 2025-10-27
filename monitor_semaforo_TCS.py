@@ -59,9 +59,11 @@ def inizializza_sensore():
     try:
         i2c = busio.I2C(board.SCL, board.SDA)
         sensor = adafruit_tcs34725.TCS34725(i2c)
-        sensor.integration_time = 150
-        sensor.gain = 4
-        print("✅ Sensore inizializzato.")
+        # --- MODIFICA PER AUMENTARE SENSIBILITA' ---
+        sensor.integration_time = 250  # Aumentato da 150
+        sensor.gain = 16  # Aumentato da 4
+        # -------------------------------------------
+        print("✅ Sensore inizializzato (con gain/time aumentati).")
         return sensor
     except Exception as e:
         print(f"❌ ERRORE: Impossibile trovare il sensore TCS34725.")
@@ -289,4 +291,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
