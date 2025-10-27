@@ -34,7 +34,8 @@ BUFFER_SIZE = 20
 # Pausa tra i cicli di lettura
 LOOP_SLEEP_TIME = 0.1
 # Secondi di "SPENTO" prima di pubblicare lo stato SPENTO
-STATE_PERSISTENCE_SECONDS = 3.0
+# --- MODIFICA RICHIESTA: Ridotto per maggiore reattività ---
+STATE_PERSISTENCE_SECONDS = 0.5  # Era 3.0
 # Soglia per il lampeggio: % di letture "SPENTO" nel buffer per definirlo "ATTESA"
 BLINK_THRESHOLD_PERCENT = 0.3  # (30%)
 
@@ -291,5 +292,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
