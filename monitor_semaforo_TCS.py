@@ -14,7 +14,7 @@ import json
 import sys
 import os
 from collections import deque
-from datetime import datetime  # <-- Importato per il timestamp
+from datetime import datetime  # Importato per il timestamp
 
 try:
     import paho.mqtt.client as mqtt
@@ -43,8 +43,9 @@ MQTT_BROKER = "192.168.20.163"
 MQTT_PORT = 1883
 MQTT_USERNAME = "shima"
 MQTT_PASSWORD = "shima"
-MACHINE_ID = "macchina_01"
-MQTT_TOPIC_STATUS = f"bma/{MACHINE_ID}/semaforo/stato"
+# --- MODIFICA RICHIESTA ---
+MACHINE_ID = "macchina_01_TCS"
+MQTT_TOPIC_STATUS = f"bma/{MACHINE_ID}/semaforo/stato"  # Questo si aggiornerà automaticamente
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_DIR = os.path.join(SCRIPT_DIR, "config")
 CALIBRATION_FILE = os.path.join(CONFIG_DIR, "calibrazione.json")
@@ -136,7 +137,7 @@ def get_instant_status(sensor, calib_data):
     Legge il sensore e determina lo stato istantaneo (ROSSO, VERDE, SPENTO)
     in base alla distanza minima dai valori calibrati.
 
-    MODIFICATO: Restituisce (stato, rgb_letto) - Anche se rgb_letto non è usato qui, lo teniamo
+    Restituisce (stato, rgb_letto)
     """
     rgb_medio = leggi_rgb_stabilizzato(sensor)
 
@@ -187,13 +188,17 @@ def analyze_state_buffer(buffer):
 
 def on_connect(client, userdata, flags, rc, properties):
     if rc == 0:
-        print("✅ Connesso al broker MQTT!")
+        # Aggiungiamo 'flags' per capire se è una nuova connessione o una riconnessione
+        print(f"✅ Connesso al broker MQTT! (Flags: {flags}, RC: {rc})")
     else:
         print(f"❌ Connessione MQTT fallita, codice: {rc}.")
 
 
 def on_disconnect(client, userdata, flags, reason_code, properties):
-    print(f"⚠️ Disconnesso dal broker MQTT. {reason_code}")
+    # Diamo un log più dettagliato
+    print(f"⚠️ Disconnesso dal broker MQTT. Reason code: {reason_code}")
+    if reason_code != 0:
+        print("   Tentativo di riconnessione automatica gestito da Paho-MQTT...")
 
 
 # --- Ciclo Principale ---
@@ -208,6 +213,10 @@ def main():
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=MACHINE_ID)
     client.on_connect, client.on_disconnect = on_connect, on_disconnect
     client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
+
+    # Aggiungiamo un delay di riconnessione esplicito
+    # Inizia dopo 1 secondo, raddoppia ad ogni fallimento, fino a 30 secondi
+    client.reconnect_delay_set(min_delay=1, max_delay=30)
 
     try:
         client.connect(MQTT_BROKER, MQTT_PORT, 60)
@@ -255,7 +264,6 @@ def main():
                 last_published_change_time = time.time()
 
                 timestamp = time.time()
-                # --- MODIFICA RICHIESTA ---
                 # Usiamo 'datetime_str' sia per il payload che per la stampa
                 datetime_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(timestamp))
 
