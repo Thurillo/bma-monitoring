@@ -45,6 +45,12 @@ BLINK_THRESHOLD_PERCENT = 0.15  # (15%)
 # Questo previene che una transizione V->S (che ha 1 solo cambio) venga letta come ATTESA.
 MIN_TRANSITIONS_FOR_BLINK = 3
 
+# --- NUOVA LOGICA DI COOLDOWN ---
+# Se abbiamo visto ROSSO, ignoriamo "ATTESA" per questo numero di secondi,
+# perché è quasi sicuramente una transizione R->V sporca.
+# (Deve essere > del tempo di riempimento del buffer: 20 * ~0.27s = ~5.4s)
+ROSSO_COOLDOWN_SECONDS = 7.0
+
 # --- CONFIGURAZIONE MQTT (e Percorsi) ---
 MQTT_BROKER = "192.168.20.163"
 MQTT_PORT = 1883
@@ -176,6 +182,9 @@ def analyze_state_buffer(buffer):
     spento_count = buffer.count("SPENTO")
 
     # REGOLA 1: Se c'è ROSSO nel buffer, è sempre ROSSO (massima priorità)
+    # Questa è stata la causa di alcuni bug di transizione, ma
+    # la priorità del ROSSO è un requisito. La gestiamo con un
+    # cooldown DOPO che questo stato scompare.
     if rosso_count > 0:
         return "ROSSO"
 
@@ -274,9 +283,9 @@ def main():
 
     stato_pubblicato = None
     last_published_change_time = 0
-
-    # Il buffer è GIA' pieno di letture reali.
-    # Non serve più inizializzarlo a SPENTO.
+    # --- NUOVA VARIABILE PER COOLDOWN ---
+    # Inizializza a un valore molto nel passato per permettere ATTESA all'avvio
+    last_seen_rosso_time = time.time() - ROSSO_COOLDOWN_SECONDS * 2
 
     print("Monitoraggio attivo.")  # Messaggio di avvio
 
@@ -287,6 +296,22 @@ def main():
             visual_state_buffer.append(stato_corrente)
 
             stato_composito = analyze_state_buffer(visual_state_buffer)
+
+            # --- BLOCCO LOGICA DI COOLDOWN ---
+            if stato_composito == "ROSSO":
+                # Se vediamo ROSSO, aggiorniamo il timer
+                last_seen_rosso_time = time.time()
+
+            # Se lo stato è ATTESA, controlla se è un falso positivo post-ROSSO
+            if stato_composito == "ATTESA":
+                if time.time() - last_seen_rosso_time < ROSSO_COOLDOWN_SECONDS:
+                    # È una transizione R->V sporca.
+                    # Ignora ATTESA e decidi tra VERDE o SPENTO
+                    if visual_state_buffer.count("VERDE") > visual_state_buffer.count("SPENTO"):
+                        stato_composito = "VERDE"
+                    else:
+                        stato_composito = "SPENTO"
+            # --- FINE BLOCCO LOGICA DI COOLDOWN ---
 
             # --- Logica di Pubblicazione ---
             stato_da_pubblicare = None
