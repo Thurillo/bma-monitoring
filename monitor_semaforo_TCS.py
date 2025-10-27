@@ -49,7 +49,7 @@ MQTT_BROKER = "192.168.20.163"
 MQTT_PORT = 1883
 MQTT_USERNAME = "shima"
 MQTT_PASSWORD = "shima"
-MACHINE_ID = "macchina_01"
+MACHINE_ID = "macchina_01_TCS"
 MQTT_TOPIC_STATUS = f"bma/{MACHINE_ID}/semaforo/stato"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
