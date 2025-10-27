@@ -220,16 +220,19 @@ def main():
             # 3. Stampa il menu
             stampa_menu()
 
-            # 4. Attendi l'input dell'utente (blocca il thread principale)
-            #    (Il thread in background continua a stampare)
-            scelta = input("Inserisci la tua scelta (1-3, 5-6): ")
+            # --- MODIFICA CHIAVE ---
+            # 4. Lascia che l'utente veda la lettura live per un po'
+            print("\nOsserva la lettura live per 3 secondi...")
+            time.sleep(3)
 
-            # 5. Ferma il thread in background
-            #    (Diamo l'input, quindi la lettura live deve fermarsi
-            #     per non sovrapporsi alle prossime istruzioni)
+            # 5. Ferma il thread in background PRIMA di chiedere l'input
+            #    (In questo modo la lettura live non interferisce con l'input)
             print("\nFermo la lettura live per l'operazione...")
             stop_live_feed.set()  # Invia il segnale di stop
             feed_thread.join()  # Attende che il thread termini
+
+            # 6. Attendi l'input dell'utente (ora non c'è più conflitto)
+            scelta = input("Inserisci la tua scelta (1-3, 5-6): ")
 
             # --- Blocco Gestione Scelta ---
             if scelta == '1':
@@ -283,4 +286,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
