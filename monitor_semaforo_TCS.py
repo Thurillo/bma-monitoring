@@ -38,9 +38,12 @@ LOOP_SLEEP_TIME = 0.01  # Era 0.05 (Ridotto per velocità)
 # Secondi di "SPENTO" prima di pubblicare lo stato SPENTO
 STATE_PERSISTENCE_SECONDS = 0.5  # Era 3.0
 # Soglia per il lampeggio: % di letture "SPENTO" nel buffer per definirlo "ATTESA"
-# --- MODIFICA PER STABILIZZARE 'ATTESA' ---
-# Ridotto da 0.3 (30%) a 0.15 (15%) per evitare oscillazioni
 BLINK_THRESHOLD_PERCENT = 0.15  # (15%)
+
+# --- NUOVA LOGICA ANTI-TRANSIZIONE ---
+# Per essere "ATTESA", il buffer deve avere almeno questo numero di cambi (V->S o S->V)
+# Questo previene che una transizione V->S (che ha 1 solo cambio) venga letta come ATTESA.
+MIN_TRANSITIONS_FOR_BLINK = 3
 
 # --- CONFIGURAZIONE MQTT (e Percorsi) ---
 MQTT_BROKER = "192.168.20.163"
@@ -178,12 +181,34 @@ def analyze_state_buffer(buffer):
 
     # REGOLA 2: Se c'è VERDE e non c'è ROSSO
     if verde_count > 0:
-        # Controlla se è lampeggiante (ATTESA)
-        # Calcola la % di "SPENTO" nel buffer
         percent_spento = spento_count / len(buffer)
+
+        # È un candidato al lampeggio (contiene sia VERDE che SPENTO)?
         if percent_spento >= BLINK_THRESHOLD_PERCENT:
-            return "ATTESA"
+
+            # --- NUOVA LOGICA ---
+            # Controlla se è un VERO lampeggio (tanti cambi V->S)
+            # o solo una transizione (1-2 cambi V->S)
+            transitions = 0
+            for i in range(len(buffer) - 1):
+                # Controlla solo i cambi VERDE/SPENTO
+                if (buffer[i] == "VERDE" and buffer[i + 1] == "SPENTO") or \
+                        (buffer[i] == "SPENTO" and buffer[i + 1] == "VERDE"):
+                    transitions += 1
+
+            if transitions >= MIN_TRANSITIONS_FOR_BLINK:
+                # Ci sono abbastanza cambi -> È un VERO LAMPEGGIO
+                return "ATTESA"
+            else:
+                # Non ci sono abbastanza cambi -> È una TRANSIZIONE
+                # Decide lo stato in base a cosa c'è di più nel buffer
+                if verde_count > spento_count:
+                    return "VERDE"
+                else:
+                    return "SPENTO"
+
         else:
+            # Non è un candidato al lampeggio (è VERDE solido)
             return "VERDE"
 
     # REGOLA 3: Se non c'è né ROSSO né VERDE, è SPENTO
