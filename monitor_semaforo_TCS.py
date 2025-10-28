@@ -48,6 +48,9 @@ MQTT_BROKER = "192.168.20.163"
 MQTT_PORT = 1883
 MQTT_USERNAME = "shima"
 MQTT_PASSWORD = "shima"
+# --- NUOVA AGGIUNTA: Topic di trigger globale ---
+MQTT_TRIGGER_TOPIC = "bma/cambiostato"
+# ----------------------------------------------
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_DIR = os.path.join(SCRIPT_DIR, "config")
 CALIBRATION_FILE = os.path.join(CONFIG_DIR, "calibrazione.json")
@@ -321,11 +324,19 @@ def main():
                     "stato": stato_pubblicato, "machine_id": MACHINE_ID,
                     "timestamp": timestamp, "datetime_str": datetime_str
                 })
-                # Il Topic ORA è dinamico
+
+                # --- MODIFICA RICHIESTA ---
+                # 1. Pubblica lo stato completo sul topic della macchina
                 client.publish(MQTT_TOPIC_STATUS, payload, qos=1, retain=True)
 
+                # 2. Pubblica l'ID della macchina sul topic di trigger
+                #    (Il payload qui è solo la stringa dell'ID macchina)
+                client.publish(MQTT_TRIGGER_TOPIC, MACHINE_ID, qos=1, retain=True)
+                # -------------------------
+
                 # Stampa il log con il timestamp
-                print(f"[{datetime_str}] Stato Pubblicato: {stato_pubblicato}. Invio messaggio MQTT...")
+                print(
+                    f"[{datetime_str}] Stato Pubblicato: {stato_pubblicato}. Invio trigger a '{MQTT_TRIGGER_TOPIC}'...")
 
             # --- MODIFICA CRITICA per MQTT ---
             # Gestisce la rete (incluso il keepalive) E funge da pausa.
