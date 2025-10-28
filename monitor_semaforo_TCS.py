@@ -67,12 +67,12 @@ def inizializza_sensore():
         # Impostazioni per alta sensibilità
         sensor.integration_time = 250
         sensor.gain = 16
-    print("✅ Sensore inizializzato (con gain/time aumentati).")
-    return sensor
+        print("✅ Sensore inizializzato (con gain/time aumentati).")
+        return sensor
     except Exception as e:
-    print(f"❌ ERRORE: Impossibile trovare il sensore TCS34725.")
-    print(f"   Dettagli: {e}")
-    return None
+        print(f"❌ ERRORE: Impossibile trovare il sensore TCS34725.")
+        print(f"   Dettagli: {e}")
+        return None
 
 
 def carica_calibrazione():
