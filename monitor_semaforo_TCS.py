@@ -42,12 +42,12 @@ BLINK_THRESHOLD_PERCENT = 0.10  # (10%)
 MIN_TRANSITIONS_FOR_BLINK = 2
 
 # --- CONFIGURAZIONE MQTT (e Percorsi) ---
+# Rimossi MACHINE_ID e MQTT_TOPIC_STATUS da qui.
+# Verranno caricati dal file JSON.
 MQTT_BROKER = "192.168.20.163"
 MQTT_PORT = 1883
 MQTT_USERNAME = "shima"
 MQTT_PASSWORD = "shima"
-MACHINE_ID = "macchina_01_TCS"
-MQTT_TOPIC_STATUS = f"bma/{MACHINE_ID}/semaforo/stato"  # Questo si aggiornerà automaticamente
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_DIR = os.path.join(SCRIPT_DIR, "config")
 CALIBRATION_FILE = os.path.join(CONFIG_DIR, "calibrazione.json")
@@ -83,8 +83,11 @@ def carica_calibrazione():
     try:
         with open(CALIBRATION_FILE, 'r') as f:
             data = json.load(f)
+        # Modifichiamo il controllo per assicurarci che i colori ci siano,
+        # l'ID macchina verrà controllato nel main.
         if "verde" not in data or "non_verde" not in data or "buio" not in data:
-            print("❌ ERRORE: File di calibrazione incompleto.")
+            print("❌ ERRORE: File di calibrazione incompleto (mancano i colori).")
+            print("   Esegui 'utils/calibra_sensore.py' per ricalibrare.")
             return None
 
         print(f"✅ Dati di calibrazione caricati da '{CALIBRATION_FILE}'")
@@ -238,6 +241,18 @@ def main():
         print("Impossibile avviare. Controlla hardware e configurazione.")
         return
 
+    # --- CARICAMENTO DINAMICO MACHINE_ID ---
+    # Carica l'ID Macchina e imposta il Topic MQTT
+    if "machine_id" not in calibrated_data or not calibrated_data["machine_id"]:
+        print(f"❌ ERRORE: 'machine_id' non trovato o non impostato in '{CALIBRATION_FILE}'.")
+        print(f"   Esegui 'utils/calibra_sensore.py' e imposta un ID Macchina (Opzione 4).")
+        return
+
+    MACHINE_ID = calibrated_data["machine_id"]
+    MQTT_TOPIC_STATUS = f"bma/{MACHINE_ID}/semaforo/stato"
+    print(f"✅ ID Macchina caricato: {MACHINE_ID} (Topic: {MQTT_TOPIC_STATUS})")
+    # --- FINE CARICAMENTO DINAMICO ---
+
     # --- FASE DI INIZIALIZZAZIONE BUFFER ---
     # Riempe il buffer con letture reali per evitare uno stato iniziale errato.
     print(f"Avvio... (Inizializzazione buffer... {BUFFER_SIZE} letture)")
@@ -253,6 +268,7 @@ def main():
     print("\n✅ Inizializzazione completata.")
 
     # Inizializzazione client MQTT
+    # L'ID client ORA è dinamico
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=MACHINE_ID)
     client.on_connect, client.on_disconnect = on_connect, on_disconnect
     client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
@@ -305,6 +321,7 @@ def main():
                     "stato": stato_pubblicato, "machine_id": MACHINE_ID,
                     "timestamp": timestamp, "datetime_str": datetime_str
                 })
+                # Il Topic ORA è dinamico
                 client.publish(MQTT_TOPIC_STATUS, payload, qos=1, retain=True)
 
                 # Stampa il log con il timestamp
