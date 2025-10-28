@@ -67,12 +67,12 @@ def inizializza_sensore():
         # Impostazioni per alta sensibilità
         sensor.integration_time = 250
         sensor.gain = 16
-        print("✅ Sensore inizializzato (con gain/time aumentati).")
-        return sensor
+    print("✅ Sensore inizializzato (con gain/time aumentati).")
+    return sensor
     except Exception as e:
-        print(f"❌ ERRORE: Impossibile trovare il sensore TCS34725.")
-        print(f"   Dettagli: {e}")
-        return None
+    print(f"❌ ERRORE: Impossibile trovare il sensore TCS34725.")
+    print(f"   Dettagli: {e}")
+    return None
 
 
 def carica_calibrazione():
@@ -320,13 +320,18 @@ def main():
                 timestamp = time.time()
                 datetime_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(timestamp))
 
-                payload = json.dumps({
+                # --- MODIFICA CORRETTIVA ---
+                # 1. Crea il dizionario dati (come prima)
+                payload_data = {
                     "stato": stato_pubblicato, "machine_id": MACHINE_ID,
                     "timestamp": timestamp, "datetime_str": datetime_str
-                })
+                }
+                # 2. Annida i dati dentro l'oggetto "message" come richiesto da n8n
+                payload = json.dumps({"message": payload_data})
+                # --- FINE MODIFICA CORRETTIVA ---
 
-                # --- MODIFICA RICHIESTA ---
-                # 1. Pubblica lo stato completo sul topic della macchina
+                # --- MODIFICA RICHIESTA (INVARIATA) ---
+                # 1. Pubblica lo stato completo (ora annidato) sul topic della macchina
                 client.publish(MQTT_TOPIC_STATUS, payload, qos=1, retain=True)
 
                 # 2. Pubblica l'ID della macchina sul topic di trigger
