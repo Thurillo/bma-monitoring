@@ -334,9 +334,8 @@ def main():
                 # 1. Pubblica lo stato completo (ora annidato) sul topic della macchina
                 client.publish(MQTT_TOPIC_STATUS, payload, qos=1, retain=True)
 
-                # 2. Pubblica l'ID della macchina sul topic di trigger
-                #    (Il payload qui è solo la stringa dell'ID macchina)
-                client.publish(MQTT_TRIGGER_TOPIC, MACHINE_ID, qos=1, retain=True)
+                # 2. Pubblica lo STESSO payload completo sul topic di trigger
+                client.publish(MQTT_TRIGGER_TOPIC, payload, qos=1, retain=True)
                 # -------------------------
 
                 # Stampa il log con il timestamp
