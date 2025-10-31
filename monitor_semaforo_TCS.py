@@ -8,12 +8,18 @@ un buffer di letture per distinguere tra fisso e lampeggiante.
 
 Versione stabile con output di log su singola riga (con timestamp)
 e gestione MQTT non bloccante.
+
+AGGIUNTA: Logica di Coda Offline (Store-and-Forward).
+Salva i messaggi su file se la rete non è disponibile e li invia
+alla riconnessione.
 """
 
 import time
 import json
 import sys
 import os
+import platform
+import subprocess
 from collections import deque
 from datetime import datetime  # Importato per il timestamp
 
@@ -54,7 +60,18 @@ MQTT_TRIGGER_TOPIC = "bma/cambiostato"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_DIR = os.path.join(SCRIPT_DIR, "config")
 CALIBRATION_FILE = os.path.join(CONFIG_DIR, "calibrazione.json")
+# --- NUOVO FILE PER LA CODA OFFLINE ---
+OFFLINE_QUEUE_FILE = os.path.join(CONFIG_DIR, "offline_queue.log")
 
+# --- NUOVE VARIABILI GLOBALI PER LA RETE ---
+is_network_online = False
+is_mqtt_connected = False
+PING_HOST = None  # Verrà caricato dalla configurazione
+NETWORK_CHECK_INTERVAL = 30  # Secondi tra un ping e l'altro
+last_network_check = 0
+
+
+# ----------------------------------------
 
 # --- Inizializzazione Hardware ---
 
@@ -92,6 +109,13 @@ def carica_calibrazione():
             print("❌ ERRORE: File di calibrazione incompleto (mancano i colori).")
             print("   Esegui 'utils/calibra_sensore.py' per ricalibrare.")
             return None
+
+        # --- MODIFICA: Controllo PING_HOST ---
+        if "ping_host" not in data or not data["ping_host"]:
+            print("❌ ERRORE: 'ping_host' non impostato nel file di calibrazione.")
+            print("   Esegui 'utils/calibra_sensore.py' e imposta un Host Ping (Opz. 5).")
+            return None
+        # --- FINE MODIFICA ---
 
         print(f"✅ Dati di calibrazione caricati da '{CALIBRATION_FILE}'")
         return data
@@ -218,19 +242,104 @@ def analyze_state_buffer(buffer):
     return "SPENTO"
 
 
-# --- Funzioni MQTT ---
+# --- NUOVE FUNZIONI: Gestione Rete e Coda Offline ---
+
+def check_network(host):
+    """Controlla la connettività di rete pingando un host."""
+    try:
+        # Determina il parametro ping corretto per il sistema operativo
+        param = '-n' if platform.system().lower() == 'windows' else '-c'
+        # Costruisce il comando di ping
+        command = ['ping', param, '1', host]
+        # Esegue il ping, sopprimendo l'output
+        response = subprocess.call(command, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        # Ritorna True se il ping ha successo (codice 0), False altrimenti
+        return response == 0
+    except Exception:
+        return False
+
+
+def save_to_queue(payload_string):
+    """Salva un payload (stringa JSON) nella coda offline."""
+    try:
+        with open(OFFLINE_QUEUE_FILE, 'a') as f:
+            f.write(payload_string + '\n')
+    except Exception as e:
+        print(f"   ⚠️ Errore durante il salvataggio nella coda: {e}")
+
+
+def process_offline_queue(client, queue_file):
+    """Invia i messaggi in coda a MQTT dopo la riconnessione."""
+    global MQTT_TRIGGER_TOPIC
+    if not os.path.exists(queue_file):
+        return  # Nessuna coda da processare
+
+    try:
+        with open(queue_file, 'r') as f:
+            lines = f.readlines()
+
+        if not lines:
+            os.remove(queue_file)  # Rimuovi se vuoto
+            return
+
+        print(f"🔄 Trovati {len(lines)} messaggi nella coda offline. Invio in corso...")
+
+        for payload_string in lines:
+            payload_string = payload_string.strip()
+            if not payload_string:
+                continue
+
+            try:
+                # Dobbiamo ri-ottenere il topic della macchina dal payload
+                payload_json = json.loads(payload_string)
+                machine_id = payload_json.get("message", {}).get("machine_id", None)
+
+                if machine_id:
+                    topic_status = f"bma/{machine_id}/semaforo/stato"
+                    # Pubblica su entrambi i topic, come da logica principale
+                    client.publish(topic_status, payload_string, qos=1, retain=True)
+                    client.publish(MQTT_TRIGGER_TOPIC, payload_string, qos=1, retain=True)
+                    time.sleep(0.1)  # Evita di sovraccaricare il broker
+                else:
+                    print(f"   ⚠️ Messaggio in coda corrotto (manca machine_id): {payload_string[:50]}...")
+
+            except Exception as e:
+                print(f"   ⚠️ Errore nell'invio del messaggio in coda: {e}")
+
+        # Dopo aver inviato tutto, svuota il file
+        with open(queue_file, 'w') as f:
+            f.write('')
+        print(f"✅ Coda offline svuotata. Sincronizzazione completata.")
+
+    except Exception as e:
+        print(f"   ⚠️ Errore critico nel processare la coda offline: {e}")
+        # Non eliminiamo il file se c'è stato un errore
+
+
+# --- Funzioni MQTT (Modificate) ---
 
 def on_connect(client, userdata, flags, rc, properties):
     """Callback per quando ci si connette al broker."""
+    global is_mqtt_connected
     if rc == 0:
         print(f"✅ Connesso al broker MQTT! (Flags: {flags}, RC: {rc})")
+        is_mqtt_connected = True
+
+        # --- NUOVO: Processa la coda dopo la connessione ---
+        queue_file = userdata.get("queue_file")
+        if queue_file:
+            process_offline_queue(client, queue_file)
+        # --- FINE NUOVO ---
     else:
         print(f"❌ Connessione MQTT fallita, codice: {rc}.")
+        is_mqtt_connected = False
 
 
 def on_disconnect(client, userdata, flags, reason_code, properties):
     """Callback per quando ci si disconnette."""
+    global is_mqtt_connected
     print(f"⚠️ Disconnesso dal broker MQTT. Reason code: {reason_code}")
+    is_mqtt_connected = False
     if reason_code != 0:
         print("   Tentativo di riconnessione automatica gestito da Paho-MQTT...")
 
@@ -238,6 +347,10 @@ def on_disconnect(client, userdata, flags, reason_code, properties):
 # --- Ciclo Principale ---
 
 def main():
+    # --- MODIFICA: Spostate variabili globali ---
+    global PING_HOST, last_network_check, is_network_online, is_mqtt_connected
+    # --- FINE MODIFICA ---
+
     sensor = inizializza_sensore()
     calibrated_data = carica_calibrazione()
     if not sensor or not calibrated_data:
@@ -253,8 +366,11 @@ def main():
 
     MACHINE_ID = calibrated_data["machine_id"]
     MQTT_TOPIC_STATUS = f"bma/{MACHINE_ID}/semaforo/stato"
+    # --- NUOVO: Carica PING_HOST ---
+    PING_HOST = calibrated_data["ping_host"]
     print(f"✅ ID Macchina caricato: {MACHINE_ID} (Topic: {MQTT_TOPIC_STATUS})")
-    # --- FINE CARICAMENTO DINAMICO ---
+    print(f"✅ Host di Rete caricato: {PING_HOST}")
+    # --- FINE NUOVO ---
 
     # --- FASE DI INIZIALIZZAZIONE BUFFER ---
     # Riempe il buffer con letture reali per evitare uno stato iniziale errato.
@@ -277,11 +393,17 @@ def main():
     client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
     client.reconnect_delay_set(min_delay=1, max_delay=30)
 
-    try:
-        client.connect(MQTT_BROKER, MQTT_PORT, 60)
-    except Exception as e:
-        print(f"❌ Errore di connessione MQTT iniziale: {e}")
-        return
+    # --- NUOVO: Aggiungi il percorso della coda a userdata ---
+    client.user_data_set({"queue_file": OFFLINE_QUEUE_FILE})
+    # --- FINE NUOVO ---
+
+    # --- MODIFICA: Non connettere subito, lascia che sia il loop a farlo ---
+    # try:
+    #     client.connect(MQTT_BROKER, MQTT_PORT, 60)
+    # except Exception as e:
+    #     print(f"❌ Errore di connessione MQTT iniziale: {e}")
+    #     return
+    # --- FINE MODIFICA ---
 
     stato_pubblicato = None
     last_published_change_time = 0
@@ -290,6 +412,34 @@ def main():
 
     try:
         while True:
+            # --- NUOVO BLOCCO: CONTROLLO RETE E CONNESSIONE MQTT ---
+            current_time = time.time()
+            if (current_time - last_network_check) > NETWORK_CHECK_INTERVAL:
+                last_network_check = current_time
+                was_online = is_network_online
+                is_network_online = check_network(PING_HOST)
+
+                if is_network_online and not is_mqtt_connected:
+                    # Rete tornata, prova a connettere MQTT
+                    if not was_online:  # Stampa solo al cambio
+                        print(
+                            f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ✅ Rete Rilevata. Connessione a MQTT...")
+                    try:
+                        # Paho gestirà la riconnessione in background
+                        client.connect(MQTT_BROKER, MQTT_PORT, 60)
+                    except Exception as e:
+                        # Gestisce il caso in cui il client è già "connecting"
+                        if "Connection refused" not in str(e):
+                            print(f"   Errore tentativo connessione: {e}")
+
+                if not is_network_online and is_mqtt_connected:
+                    # Rete persa, forza disconnessione MQTT
+                    print(
+                        f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ❌ Rete Assente. Disconnessione forzata da MQTT...")
+                    client.disconnect()  # Questo triggera on_disconnect
+
+            # --- FINE BLOCCO RETE ---
+
             # --- Lettura e Analisi ---
             stato_corrente, rgb_corrente = get_instant_status(sensor, calibrated_data)
             visual_state_buffer.append(stato_corrente)
@@ -330,17 +480,22 @@ def main():
                 payload = json.dumps({"message": payload_data})
                 # --- FINE MODIFICA CORRETTIVA ---
 
-                # --- MODIFICA RICHIESTA (INVARIATA) ---
-                # 1. Pubblica lo stato completo (ora annidato) sul topic della macchina
-                client.publish(MQTT_TOPIC_STATUS, payload, qos=1, retain=True)
+                # --- MODIFICA LOGICA: Pubblica o Salva in Coda ---
+                if is_mqtt_connected:
+                    # 1. Pubblica lo stato completo (ora annidato) sul topic della macchina
+                    client.publish(MQTT_TOPIC_STATUS, payload, qos=1, retain=True)
 
-                # 2. Pubblica lo STESSO payload completo sul topic di trigger
-                client.publish(MQTT_TRIGGER_TOPIC, payload, qos=1, retain=True)
-                # -------------------------
+                    # 2. Pubblica lo STESSO payload completo sul topic di trigger
+                    client.publish(MQTT_TRIGGER_TOPIC, payload, qos=1, retain=True)
 
-                # Stampa il log con il timestamp
-                print(
-                    f"[{datetime_str}] Stato Pubblicato: {stato_pubblicato}. Invio trigger a '{MQTT_TRIGGER_TOPIC}'...")
+                    # Stampa il log con il timestamp
+                    print(
+                        f"[{datetime_str}] Stato Pubblicato: {stato_pubblicato}. Invio trigger a '{MQTT_TRIGGER_TOPIC}'...")
+                else:
+                    # Se MQTT non è connesso, salva in coda
+                    save_to_queue(payload)
+                    print(f"[{datetime_str}] MQTT OFFLINE. Stato {stato_pubblicato} salvato in coda.")
+                # --- FINE MODIFICA ---
 
             # --- MODIFICA CRITICA per MQTT ---
             # Gestisce la rete (incluso il keepalive) E funge da pausa.
@@ -357,4 +512,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
