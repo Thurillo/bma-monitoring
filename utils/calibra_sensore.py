@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
+# ---
+# File: calibra_sensore.py
+# Directory: utils/
+# Ultima Modifica: 2025-11-12
+# Versione: 1.00
+# ---
+
 """
 SCRIPT: CALIBRAZIONE MANUALE (Ambiente Reale)
 
 Permette all'utente di:
 1. Campionare gli stati VERDE, ROSSO (non_verde), SPENTO (buio).
 2. Impostare l'ID Macchina (per MQTT).
-3. Impostare un Host (IP/Hostname) da pingare per il controllo di rete.
-4. Salvare tutto in 'config/calibrazione.json'.
+3. Salvare tutto in 'config/calibrazione.json'.
 
 Supporta il caricamento dei dati esistenti per modifiche parziali.
 """
@@ -42,7 +48,7 @@ def inizializza_sensore():
         i2c = busio.I2C(board.SCL, board.SDA)
         sensor = adafruit_tcs34725.TCS34725(i2c)
         # USARE LE STESSE IMPOSTAZIONI DELLO SCRIPT DI MONITORAGGIO
-        sensor.integration_time = 250
+        sensor.integration_time = 150  # Modificato per corrispondere al monitor
         sensor.gain = 16
         print("✅ Sensore inizializzato (con gain/time aumentati).")
         return sensor
@@ -156,19 +162,14 @@ def stampa_menu():
     machine_id = dati_calibrazione_temporanei.get('machine_id')
     stato_id = f"✅ IMPOSTATO ({machine_id})" if machine_id else "❌ NON IMPOSTATO"
 
-    # Ping Host
-    ping_host = dati_calibrazione_temporanei.get('ping_host')
-    stato_ping = f"✅ IMPOSTATO ({ping_host})" if ping_host else "❌ NON IMPOSTATO"
-
     print(f"1. Campiona 'Verde' (luce fissa o lampeggiante)  {stato_verde}")
     print(f"2. Campiona 'Rosso' (luce fissa o lampeggiante)  {stato_rosso}")
     print(f"3. Campiona 'Spento' (fisso)                     {stato_buio}")
     print("-" * 55)
     print(f"4. Imposta ID Macchina (per MQTT)                  {stato_id}")
-    print(f"5. Imposta Host Ping Rete (es. 192.168.1.1)      {stato_ping}")
     print("-" * 55)
-    print("6. Salva calibrazione e configurazione su file ed Esci")
-    print("7. Esci SENZA salvare")
+    print("5. Salva calibrazione e configurazione su file ed Esci")
+    print("6. Esci SENZA salvare")
     print("=" * 55)
 
 
@@ -182,14 +183,12 @@ def salva_file_calibrazione():
     if "non_verde" not in dati_calibrazione_temporanei: mancanti.append("Rosso (non_verde)")
     if "buio" not in dati_calibrazione_temporanei: mancanti.append("Spento (buio)")
     if "machine_id" not in dati_calibrazione_temporanei: mancanti.append("ID Macchina")
-    if "ping_host" not in dati_calibrazione_temporanei: mancanti.append("Host Ping")
 
     # Stampa valori impostati
     print(f"  Verde:           {format_rgb(dati_calibrazione_temporanei.get('verde'))}")
     print(f"  Rosso (non_verde): {format_rgb(dati_calibrazione_temporanei.get('non_verde'))}")
     print(f"  Spento (buio):   {format_rgb(dati_calibrazione_temporanei.get('buio'))}")
     print(f"  ID Macchina:     {dati_calibrazione_temporanei.get('machine_id', 'N/D')}")
-    print(f"  Host Ping Rete:  {dati_calibrazione_temporanei.get('ping_host', 'N/D')}")
     print("-" * 34)
 
     if mancanti:
@@ -250,7 +249,7 @@ def main():
         stop_live_thread.set()
         live_thread.join(timeout=1.0)  # Aspetta che il thread termini
 
-        scelta = input("Inserisci la tua scelta (1-7): ")
+        scelta = input("Inserisci la tua scelta (1-6): ")
 
         if scelta == '1':
             print("\n--- 1. Campiona VERDE ---")
@@ -291,27 +290,15 @@ def main():
             time.sleep(1)
 
         elif scelta == '5':
-            print("\n--- 5. Imposta Host Ping Rete ---")
-            print(f"Host Attuale: {dati_calibrazione_temporanei.get('ping_host', 'Nessuno')}")
-            print("Inserisci l'indirizzo IP del tuo router o di un server stabile (es. 192.168.1.1)")
-            nuovo_host = input("Inserisci il nuovo Host Ping: ").strip()
-            if nuovo_host:
-                dati_calibrazione_temporanei["ping_host"] = nuovo_host
-                print(f"✅ Host Ping impostato: {nuovo_host}")
-            else:
-                print("   Nessuna modifica.")
-            time.sleep(1)
-
-        elif scelta == '6':
             if salva_file_calibrazione():
                 break  # Esce dal loop while True
 
-        elif scelta == '7':
+        elif scelta == '6':
             print("\nUscita senza salvataggio.")
             break  # Esce dal loop while True
 
         else:
-            print("Scelta non valida. Inserisci un numero da 1 a 7.")
+            print("Scelta non valida. Inserisci un numero da 1 a 6.")
             time.sleep(1)
 
     print("Programma di calibrazione terminato.")
