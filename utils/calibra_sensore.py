@@ -2,8 +2,8 @@
 # ---
 # File: calibra_sensore.py
 # Directory: utils/
-# Ultima Modifica: 2025-11-12
-# Versione: 1.00
+# Ultima Modifica: 2025-11-13
+# Versione: 1.02
 # ---
 
 """
@@ -12,7 +12,8 @@ SCRIPT: CALIBRAZIONE MANUALE (Ambiente Reale)
 Permette all'utente di:
 1. Campionare gli stati VERDE, ROSSO (non_verde), SPENTO (buio).
 2. Impostare l'ID Macchina (per MQTT).
-3. Salvare tutto in 'config/calibrazione.json'.
+3. Impostare il Tempo di Integrazione del sensore.
+4. Salvare tutto in 'config/calibrazione.json'.
 
 Supporta il caricamento dei dati esistenti per modifiche parziali.
 """
@@ -32,7 +33,7 @@ CONFIG_DIR = os.path.join(SCRIPT_DIR, "..", "config")
 FILE_CALIBRAZIONE = os.path.join(CONFIG_DIR, "calibrazione.json")
 CAMPIONI_PER_LETTURA = 10  # Numero di letture da mediare per un valore stabile
 
-# Dizionario per tenere i valori prima di salvarli
+# Dizionario per tenere i valori (caricato all'avvio)
 dati_calibrazione_temporanei = {}
 
 # Variabili per il thread di lettura live
@@ -42,15 +43,22 @@ stop_live_thread = threading.Event()
 # --- Inizializzazione Hardware ---
 
 def inizializza_sensore():
-    """Inizializza il sensore TCS34725."""
+    """
+    Inizializza il sensore TCS34725 leggendo le impostazioni
+    dalla configurazione globale (dati_calibrazione_temporanei).
+    """
     print("🔧 Inizializzazione sensore TCS34725...")
+
+    # Legge l'integration_time dalla config caricata, o usa 250 come default
+    integration_time = dati_calibrazione_temporanei.get('integration_time', 250)
+
     try:
         i2c = busio.I2C(board.SCL, board.SDA)
         sensor = adafruit_tcs34725.TCS34725(i2c)
         # USARE LE STESSE IMPOSTAZIONI DELLO SCRIPT DI MONITORAGGIO
-        sensor.integration_time = 150  # Modificato per corrispondere al monitor
+        sensor.integration_time = integration_time
         sensor.gain = 16
-        print("✅ Sensore inizializzato (con gain/time aumentati).")
+        print(f"✅ Sensore inizializzato (Time: {integration_time}ms, Gain: 16x).")
         return sensor
     except Exception as e:
         print(f"❌ ERRORE: Impossibile trovare il sensore TCS34725.")
@@ -100,6 +108,8 @@ def leggi_rgb_stabilizzato(sensor, campioni=CAMPIONI_PER_LETTURA):
 
 def debug_lettura_live_thread():
     """Mostra i valori letti dal sensore in tempo reale in un thread separato."""
+    # Inizializza un sensore separato per il thread live
+    # leggerà le impostazioni dalla config globale
     sensor_thread = inizializza_sensore()
     if not sensor_thread:
         print("   [LIVE] Errore: sensore non trovato nel thread.")
@@ -162,14 +172,19 @@ def stampa_menu():
     machine_id = dati_calibrazione_temporanei.get('machine_id')
     stato_id = f"✅ IMPOSTATO ({machine_id})" if machine_id else "❌ NON IMPOSTATO"
 
+    # NUOVO: Tempo di Integrazione
+    integration_time = dati_calibrazione_temporanei.get('integration_time', 250)
+    stato_integrazione = f"✅ IMPOSTATO ({integration_time}ms)"
+
     print(f"1. Campiona 'Verde' (luce fissa o lampeggiante)  {stato_verde}")
     print(f"2. Campiona 'Rosso' (luce fissa o lampeggiante)  {stato_rosso}")
     print(f"3. Campiona 'Spento' (fisso)                     {stato_buio}")
     print("-" * 55)
     print(f"4. Imposta ID Macchina (per MQTT)                  {stato_id}")
+    print(f"5. Imposta Tempo Integrazione (Sensore)          {stato_integrazione}")
     print("-" * 55)
-    print("5. Salva calibrazione e configurazione su file ed Esci")
-    print("6. Esci SENZA salvare")
+    print("6. Salva calibrazione e configurazione su file ed Esci")
+    print("7. Esci SENZA salvare")
     print("=" * 55)
 
 
@@ -183,19 +198,22 @@ def salva_file_calibrazione():
     if "non_verde" not in dati_calibrazione_temporanei: mancanti.append("Rosso (non_verde)")
     if "buio" not in dati_calibrazione_temporanei: mancanti.append("Spento (buio)")
     if "machine_id" not in dati_calibrazione_temporanei: mancanti.append("ID Macchina")
+    # Aggiunto controllo per integration_time
+    if "integration_time" not in dati_calibrazione_temporanei: mancanti.append("Tempo Integrazione")
 
     # Stampa valori impostati
-    print(f"  Verde:           {format_rgb(dati_calibrazione_temporanei.get('verde'))}")
-    print(f"  Rosso (non_verde): {format_rgb(dati_calibrazione_temporanei.get('non_verde'))}")
-    print(f"  Spento (buio):   {format_rgb(dati_calibrazione_temporanei.get('buio'))}")
-    print(f"  ID Macchina:     {dati_calibrazione_temporanei.get('machine_id', 'N/D')}")
-    print("-" * 34)
+    print(f"  Verde:             {format_rgb(dati_calibrazione_temporanei.get('verde'))}")
+    print(f"  Rosso (non_verde):   {format_rgb(dati_calibrazione_temporanei.get('non_verde'))}")
+    print(f"  Spento (buio):     {format_rgb(dati_calibrazione_temporanei.get('buio'))}")
+    print(f"  ID Macchina:       {dati_calibrazione_temporanei.get('machine_id', 'N/D')}")
+    print(f"  Tempo Integrazione: {dati_calibrazione_temporanei.get('integration_time', 'N/D')}ms")
+    print("-" * 36)
 
     if mancanti:
         print(f"⚠️ ATTENZIONE: I seguenti valori non sono impostati:")
         for item in mancanti:
             print(f"   - {item}")
-        print("   Lo script di monitoraggio potrebbe non avviarsi.")
+        print("   Lo script di monitoraggio potrebbe non avviarsi correttamente.")
         conferma = input(f"Salvare comunque in '{FILE_CALIBRAZIONE}'? (s/n): ").lower()
     else:
         conferma = input(f"Tutti i valori sono impostati. Salvare? (s/n): ").lower()
@@ -220,11 +238,12 @@ def salva_file_calibrazione():
 # --- Ciclo Principale ---
 
 def main():
+    # Carica i dati PRIMA di inizializzare il sensore
+    carica_dati_esistenti()
+
     sensor_main = inizializza_sensore()
     if not sensor_main:
         sys.exit(1)
-
-    carica_dati_esistenti()
 
     print("\nIMPORTANTE: Posiziona il sensore in modo che 'veda' le luci.")
 
@@ -249,7 +268,7 @@ def main():
         stop_live_thread.set()
         live_thread.join(timeout=1.0)  # Aspetta che il thread termini
 
-        scelta = input("Inserisci la tua scelta (1-6): ")
+        scelta = input("Inserisci la tua scelta (1-7): ")
 
         if scelta == '1':
             print("\n--- 1. Campiona VERDE ---")
@@ -290,15 +309,41 @@ def main():
             time.sleep(1)
 
         elif scelta == '5':
+            print("\n--- 5. Imposta Tempo Integrazione (ms) ---")
+            current_time = dati_calibrazione_temporanei.get('integration_time', 250)
+            print(f"Valore Attuale: {current_time}ms")
+            print("Valore raccomandato per stabilità: 250")
+            print("Valori più bassi (es. 150) sono più veloci ma più sensibili al 'flicker'.")
+            print("Valori validi: da 2.4 a 700 (circa).")
+
+            try:
+                nuovo_tempo_str = input(f"Inserisci nuovo valore (INVIO per annullare): ").strip()
+                if nuovo_tempo_str:
+                    nuovo_tempo = int(nuovo_tempo_str)
+                    if 5 <= nuovo_tempo <= 700:
+                        dati_calibrazione_temporanei["integration_time"] = nuovo_tempo
+                        print(f"✅ Tempo impostato: {nuovo_tempo}ms.")
+                        print("   Applico l'impostazione al sensore per questa sessione...")
+                        sensor_main.integration_time = nuovo_tempo
+                        print("✅ Fatto.")
+                    else:
+                        print("   Valore fuori range (deve essere tra 5 e 700).")
+                else:
+                    print("   Nessuna modifica.")
+            except ValueError:
+                print("   Input non valido. Inserisci solo un numero.")
+            time.sleep(1)
+
+        elif scelta == '6':
             if salva_file_calibrazione():
                 break  # Esce dal loop while True
 
-        elif scelta == '6':
+        elif scelta == '7':
             print("\nUscita senza salvataggio.")
             break  # Esce dal loop while True
 
         else:
-            print("Scelta non valida. Inserisci un numero da 1 a 6.")
+            print("Scelta non valida. Inserisci un numero da 1 a 7.")
             time.sleep(1)
 
     print("Programma di calibrazione terminato.")

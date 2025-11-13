@@ -2,8 +2,8 @@
 # ---
 # File: monitor_semaforo_TCS.py
 # Directory: [root]
-# Ultima Modifica: 2025-11-12
-# Versione: 1.00
+# Ultima Modifica: 2025-11-13
+# Versione: 1.02
 # ---
 
 """
@@ -70,16 +70,19 @@ is_mqtt_connected = False
 
 # --- Inizializzazione Hardware ---
 
-def inizializza_sensore():
-    """Inizializza il sensore TCS34725."""
+def inizializza_sensore(integration_time):
+    """
+    Inizializza il sensore TCS34725.
+    Accetta integration_time come argomento per garantire la coerenza.
+    """
     print("🔧 Inizializzazione sensore TCS34725...")
     try:
         i2c = busio.I2C(board.SCL, board.SDA)
         sensor = adafruit_tcs34725.TCS34725(i2c)
-        # Impostazioni per alta sensibilità
-        sensor.integration_time = 150  # Ridotto per campionare più velocemente i lampeggi
+        # Impostazioni per alta sensibilità (caricate da config)
+        sensor.integration_time = integration_time
         sensor.gain = 16
-        print("✅ Sensore inizializzato (con gain/time aumentati).")
+        print(f"✅ Sensore inizializzato (Time: {integration_time}ms, Gain: 16x).")
         return sensor
     except Exception as e:
         print(f"❌ ERRORE: Impossibile trovare il sensore TCS34725.")
@@ -98,8 +101,7 @@ def carica_calibrazione():
     try:
         with open(CALIBRATION_FILE, 'r') as f:
             data = json.load(f)
-        # Modifichiamo il controllo per assicurarci che i colori ci siano,
-        # l'ID macchina verrà controllato nel main.
+        # Modifichiamo il controllo per assicurarci che i colori ci siano
         if "verde" not in data or "non_verde" not in data or "buio" not in data:
             print("❌ ERRORE: File di calibrazione incompleto (mancano i colori).")
             print("   Esegui 'utils/calibra_sensore.py' per ricalibrare.")
@@ -252,15 +254,30 @@ def on_disconnect(client, userdata, flags, reason_code, properties):
         print("   Tentativo di riconnessione automatica gestito da Paho-MQTT...")
 
 
+# ... (Funzioni di lettura e analisi invariate) ...
 # --- Ciclo Principale ---
 
 def main():
     global is_mqtt_connected  # Aggiunto per riferimento
 
-    sensor = inizializza_sensore()
+    # Carica la configurazione prima di inizializzare l'hardware
     calibrated_data = carica_calibrazione()
-    if not sensor or not calibrated_data:
-        print("Impossibile avviare. Controlla hardware e configurazione.")
+    if not calibrated_data:
+        print("Impossibile avviare. File di calibrazione mancante o corrotto.")
+        return
+
+    # --- CARICAMENTO DINAMICO INTEGRATION TIME ---
+    # Carica il tempo di integrazione dal file JSON.
+    # Usa 250 come default sicuro se non è specificato.
+    integration_time = calibrated_data.get('integration_time', 250)
+    if integration_time == 250 and 'integration_time' not in calibrated_data:
+        print("⚠️  'integration_time' non trovato in config, uso default: 250ms")
+    # --- FINE CARICAMENTO ---
+
+    # Inizializza il sensore *passando* il tempo di integrazione
+    sensor = inizializza_sensore(integration_time)
+    if not sensor:
+        print("Impossibile avviare. Controlla hardware.")
         return
 
     # --- CARICAMENTO DINAMICO MACHINE_ID ---
@@ -270,9 +287,9 @@ def main():
         print(f"   Esegui 'utils/calibra_sensore.py' e imposta un ID Macchina (Opzione 4).")
         return
 
-    MACHINE_ID = calibrated_data["machine_id"]
-    MQTT_TOPIC_STATUS = f"bma/{MACHINE_ID}/semaforo/stato"
-    print(f"✅ ID Macchina caricato: {MACHINE_ID} (Topic: {MQTT_TOPIC_STATUS})")
+    MACHINE_ID = calibrated_data.get("machine_id")  # Usiamo .get() per sicurezza
+    if not MACHINE_ID:
+        print(f"❌ ERRORE: 'machine_id' non trovato o non impostato in '{CALIBRATION_FILE}'.")
     # --- FINE CARICAMENTO DINAMICO ---
 
     # --- FASE DI INIZIALIZZAZIONE BUFFER ---
