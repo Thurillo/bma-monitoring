@@ -3,3 +3,4 @@
 paho-mqtt==2.1.0
 adafruit-blinka
 adafruit-circuitpython-tcs34725
+RPi.GPIO
