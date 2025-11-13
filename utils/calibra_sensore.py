@@ -3,7 +3,7 @@
 # File: calibra_sensore.py
 # Directory: utils/
 # Ultima Modifica: 2025-11-13
-# Versione: 1.02
+# Versione: 1.03
 # ---
 
 """
@@ -172,8 +172,9 @@ def stampa_menu():
     machine_id = dati_calibrazione_temporanei.get('machine_id')
     stato_id = f"✅ IMPOSTATO ({machine_id})" if machine_id else "❌ NON IMPOSTATO"
 
-    # NUOVO: Tempo di Integrazione
+    # Tempo di Integrazione
     integration_time = dati_calibrazione_temporanei.get('integration_time', 250)
+    # Mostra 250 come default anche se non è ancora salvato nel dizionario
     stato_integrazione = f"✅ IMPOSTATO ({integration_time}ms)"
 
     print(f"1. Campiona 'Verde' (luce fissa o lampeggiante)  {stato_verde}")
@@ -192,13 +193,20 @@ def salva_file_calibrazione():
     """Controlla e salva i dati di calibrazione."""
     print("\n--- RIEPILOGO CONFIGURAZIONE ---")
 
+    # --- MODIFICA V 1.03: Imposta default se mancante ---
+    if "integration_time" not in dati_calibrazione_temporanei:
+        print("   ℹ️ 'Tempo Integrazione' non impostato, imposto il default: 250ms.")
+        dati_calibrazione_temporanei["integration_time"] = 250
+    # --- FINE MODIFICA ---
+
     # Controlla cosa manca
     mancanti = []
     if "verde" not in dati_calibrazione_temporanei: mancanti.append("Verde")
     if "non_verde" not in dati_calibrazione_temporanei: mancanti.append("Rosso (non_verde)")
     if "buio" not in dati_calibrazione_temporanei: mancanti.append("Spento (buio)")
     if "machine_id" not in dati_calibrazione_temporanei: mancanti.append("ID Macchina")
-    # Aggiunto controllo per integration_time
+
+    # Questo controllo ora troverà il valore (impostato o default)
     if "integration_time" not in dati_calibrazione_temporanei: mancanti.append("Tempo Integrazione")
 
     # Stampa valori impostati
