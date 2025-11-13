@@ -3,7 +3,7 @@
 # File: monitor_semaforo_TCS.py
 # Directory: [root]
 # Ultima Modifica: 2025-11-13
-# Versione: 1.03
+# Versione: 1.04
 # ---
 
 """
@@ -43,10 +43,13 @@ BUFFER_SIZE = 30  # Aumentato per maggiore stabilità
 LOOP_SLEEP_TIME = 0.1  # Stabile per MQTT
 # Secondi di "SPENTO" prima di pubblicare lo stato SPENTO
 STATE_PERSISTENCE_SECONDS = 0.5
+
+# --- MODIFICHE V 1.04: Parametri resi più severi per evitare 'flutter' ---
 # Soglia per il lampeggio: % di letture "SPENTO" nel buffer per definirlo "ATTESA"
-BLINK_THRESHOLD_PERCENT = 0.10  # (10%)
+BLINK_THRESHOLD_PERCENT = 0.25  # (25%) - Aumentato da 0.10
 # Per essere "ATTESA", il buffer deve avere almeno questo numero di cambi (V->S o S->V)
-MIN_TRANSITIONS_FOR_BLINK = 2
+MIN_TRANSITIONS_FOR_BLINK = 4  # Aumentato da 2
+# --- FINE MODIFICHE V 1.04 ---
 
 # --- CONFIGURAZIONE MQTT (e Percorsi) ---
 # Rimossi MACHINE_ID e MQTT_TOPIC_STATUS da qui.
@@ -115,7 +118,7 @@ def carica_calibrazione():
 
 
 # --- Funzioni di Lettura e Analisi ---
-# ... (Funzioni leggi_rgb_attuale, leggi_rgb_stabilizzato, calcola_distanza_rgb, get_instant_status, analyze_state_buffer... invariate) ...
+# ... (Funzioni leggi_rgb_attuale, leggi_rgb_stabilizzato, calcola_distanza_rgb, get_instant_status... invariate) ...
 
 def leggi_rgb_attuale(sens):
     """Esegue una singola lettura RGB, con fallback."""
@@ -202,7 +205,7 @@ def analyze_state_buffer(buffer):
         percent_spento = spento_count / len(buffer)
 
         # È un candidato al lampeggio (contiene sia VERDE che SPENTO)?
-        if percent_spento >= BLINK_THRESHOLD_PERCENT:
+        if percent_spento >= BLINK_THRESHOLD_PERCENT:  # Modifica V1.04 (ora 25%)
 
             # Controlla se è un VERO lampeggio (tanti cambi V->S)
             # o solo una transizione (1-2 cambi V->S)
@@ -213,7 +216,7 @@ def analyze_state_buffer(buffer):
                         (buffer[i] == "SPENTO" and buffer[i + 1] == "VERDE"):
                     transitions += 1
 
-            if transitions >= MIN_TRANSITIONS_FOR_BLINK:
+            if transitions >= MIN_TRANSITIONS_FOR_BLINK:  # Modifica V1.04 (ora 4)
                 # Ci sono abbastanza cambi -> È un VERO LAMPEGGIO
                 return "ATTESA"
             else:
