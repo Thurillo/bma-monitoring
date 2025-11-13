@@ -3,7 +3,7 @@
 # File: monitor_semaforo_TCS.py
 # Directory: [root]
 # Ultima Modifica: 2025-11-13
-# Versione: 1.02
+# Versione: 1.03
 # ---
 
 """
@@ -115,11 +115,11 @@ def carica_calibrazione():
 
 
 # --- Funzioni di Lettura e Analisi ---
+# ... (Funzioni leggi_rgb_attuale, leggi_rgb_stabilizzato, calcola_distanza_rgb, get_instant_status, analyze_state_buffer... invariate) ...
 
 def leggi_rgb_attuale(sens):
     """Esegue una singola lettura RGB, con fallback."""
     try:
-        # Metodo preferito
         result = sens.color_rgb_bytes
         if len(result) >= 3: return result[:3]
     except Exception:
@@ -290,7 +290,10 @@ def main():
     MACHINE_ID = calibrated_data.get("machine_id")  # Usiamo .get() per sicurezza
     if not MACHINE_ID:
         print(f"❌ ERRORE: 'machine_id' non trovato o non impostato in '{CALIBRATION_FILE}'.")
-    # --- FINE CARICAMENTO DINAMICO ---
+
+    # --- MODIFICA V 1.03: Definisci MQTT_TOPIC_STATUS qui ---
+    MQTT_TOPIC_STATUS = f"bma/{MACHINE_ID}/semaforo/stato"
+    # --- FINE MODIFICA ---
 
     # --- FASE DI INIZIALIZZAZIONE BUFFER ---
     # Riempe il buffer con letture reali per evitare uno stato iniziale errato.
