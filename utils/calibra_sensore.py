@@ -3,18 +3,17 @@
 # File: calibra_sensore.py
 # Directory: utils/
 # Ultima Modifica: 2025-11-14
-# Versione: 1.12
+# Versione: 1.13
 # ---
 
 """
 SCRIPT: CALIBRAZIONE MANUALE (Ambiente Reale)
 
-V 1.12:
-- Aggiunta la logica di campionamento del "Picco" (Peak).
-- Obbliga l'utente a calibrare 'Spento' (Buio) prima
-  di calibrare 'Verde' o 'Rosso'.
-- Questo evita che il lampeggiante 'corrompa' la media
-  della calibrazione.
+V 1.13:
+- Modificata 'leggi_rgb_picco' come da richiesta utente.
+- Campiona per 10 secondi (invece di 5).
+- Rimuove la 'media di 3' e usa letture singole (leggi_rgb_attuale)
+  per trovare il vero picco (massima distanza da 'spento').
 """
 
 import board
@@ -34,8 +33,7 @@ FILE_CALIBRAZIONE = os.path.join(CONFIG_DIR, "calibrazione.json")
 # Per la media (stato SPENTO)
 CAMPIONI_PER_MEDIA = 10
 # Per il picco (stati VERDE/ROSSO)
-CAMPIONI_PER_LETTURA_PICCO = 3  # Lettura veloce stabilizzata
-NUMERO_LETTURE_PICCO = 15  # Campiona per circa 4-5 secondi
+DURATA_CAMPIONAMENTO_PICCO_SEC = 10  # Campiona per 10 secondi
 
 VALID_GAINS = [1, 4, 16, 60]
 
@@ -118,38 +116,45 @@ def leggi_rgb_media(sensor, campioni=CAMPIONI_PER_MEDIA):
     }
 
 
+# --- MODIFICA V 1.13: Logica Picco aggiornata ---
 def leggi_rgb_picco(sensor, valore_spento_dict):
     """
     Calcola il PICCO di N letture (per stati VERDE/ROSSO lampeggianti).
-    Trova la lettura più LONTANA dal valore SPENTO.
+    Trova la lettura (singola, non media) più LONTANA dal valore SPENTO
+    in un intervallo di 10 secondi.
     """
-    print(f"   Avvio campionamento PICCO ({NUMERO_LETTURE_PICCO} letture, ~4-5 sec)...")
 
     picco_rgb_tuple = (0, 0, 0)
     max_distanza = -1
 
     # Calcola il tempo di pausa in base all'integration time
-    # per un ciclo di circa 0.25-0.3 sec
-    integration_time = sensor.integration_time / 1000.0  # in secondi
-    pausa = max(0.05, 0.25 - integration_time)
+    integration_time_sec = sensor.integration_time / 1000.0  # in secondi
+    # Il ciclo deve includere la lettura (integration_time) + una piccola pausa I2C/Python
+    pausa_ciclo = max(0.05, integration_time_sec + 0.01)
 
-    for i in range(NUMERO_LETTURE_PICCO):
-        # Facciamo una mini-media di 3 letture per stabilizzare il picco
-        lettura_stabile_dict = leggi_rgb_media(sensor, campioni=CAMPIONI_PER_LETTURA_PICCO)
-        lettura_stabile_tuple = (lettura_stabile_dict["R"], lettura_stabile_dict["G"], lettura_stabile_dict["B"])
+    numero_campioni_totali = int(DURATA_CAMPIONAMENTO_PICCO_SEC / pausa_ciclo)
 
-        distanza = calcola_distanza_rgb_raw(lettura_stabile_tuple, valore_spento_dict)
+    print(f"   Avvio campionamento PICCO ({DURATA_CAMPIONAMENTO_PICCO_SEC} sec, ~{numero_campioni_totali} letture)...")
 
-        print(f"   Campionamento {i + 1}/{NUMERO_LETTURE_PICCO}: Dist. da Spento={distanza:.1f}", end="\r")
+    for i in range(numero_campioni_totali):
+        # Legge il valore attuale singolo (NON la media)
+        lettura_tuple = leggi_rgb_attuale(sensor)
+
+        distanza = calcola_distanza_rgb_raw(lettura_tuple, valore_spento_dict)
+
+        print(f"   Campionamento {i + 1}/{numero_campioni_totali}: Dist. da Spento={distanza:<6.1f}", end="\r")
 
         if distanza > max_distanza:
             max_distanza = distanza
-            picco_rgb_tuple = lettura_stabile_tuple
+            picco_rgb_tuple = lettura_tuple
 
-        time.sleep(pausa)
+        time.sleep(pausa_ciclo)  # Attende il tempo calcolato
 
     print("\n   ...Campionamento PICCO completato.")
     return {"R": picco_rgb_tuple[0], "G": picco_rgb_tuple[1], "B": picco_rgb_tuple[2]}
+
+
+# --- FINE MODIFICA V 1.13 ---
 
 
 def debug_lettura_live_thread():
@@ -322,7 +327,7 @@ def main():
         scelta = input("Inserisci la tua scelta (1-9): ")
 
         if scelta == '1' or scelta == '2':  # VERDE o ROSSO (PICCO)
-            # --- NUOVA LOGICA V 1.12 ---
+            # --- NUOVA LOGICA V 1.12 (invariata in 1.13) ---
             if 'buio' not in dati_calibrazione_temporanei:
                 print("\n❌ ERRORE: Devi calibrare 'Spento' (Opzione 3) PRIMA di calibrare Verde o Rosso.")
                 time.sleep(2)
@@ -333,7 +338,8 @@ def main():
             if scelta == '1':
                 print("\n--- 1. Campiona PICCO VERDE ---")
                 print("Ora fai in modo che la macchina mostri la luce VERDE (anche lampeggiante).")
-                input("Quando è pronta, premi INVIO per avviare il campionamento (~4-5 sec)...")
+                input(
+                    f"Quando è pronta, premi INVIO per avviare il campionamento ({DURATA_CAMPIONAMENTO_PICCO_SEC} sec)...")
                 valore = leggi_rgb_picco(sensor_main, valore_spento)
                 dati_calibrazione_temporanei["verde"] = valore
                 print(f"✅ 'Verde' (Picco) registrato: {valore}")
@@ -341,7 +347,8 @@ def main():
             else:  # scelta == '2'
                 print("\n--- 2. Campiona PICCO ROSSO ---")
                 print("Ora fai in modo che la macchina mostri la luce ROSSA (anche lampeggiante).")
-                input("Quando è pronta, premi INVIO per avviare il campionamento (~4-5 sec)...")
+                input(
+                    f"Quando è pronta, premi INVIO per avviare il campionamento ({DURATA_CAMPIONAMENTO_PICCO_SEC} sec)...")
                 valore = leggi_rgb_picco(sensor_main, valore_spento)
                 dati_calibrazione_temporanei["non_verde"] = valore
                 print(f"✅ 'Rosso' (Picco) registrato: {valore}")
