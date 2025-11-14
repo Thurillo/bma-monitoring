@@ -3,17 +3,18 @@
 # File: monitor_semaforo_TCS.py
 # Directory: [root]
 # Ultima Modifica: 2025-11-14
-# Versione: 1.15
+# Versione: 1.16
 # ---
 
 """
 MONITOR SEMAFORO - Versione TCS34725 (4 Stati)
 
-V 1.15:
-- FIX: Corretto NameError per 'MQTT_USERNAME' e 'MQTT_PASSWORD'.
-- Ripristinate le definizioni delle costanti MQTT
-  (USERNAME, PASSWORD) che erano
-  state accidentalmente rimosse nella V 1.14.
+V 1.16:
+- BUFFER_SIZE (operativo) non è più hardcoded (era 35).
+- Ora carica 'buffer_size' da 'calibrazione.json'.
+- Se non lo trova, usa 35 come default.
+- INIT_BUFFER_SIZE (avvio) rimane 20 (hardcoded)
+  come da richiesta.
 """
 
 import time
@@ -35,15 +36,11 @@ except ImportError:
 
 # --- CONFIGURAZIONE LOGICA DI RILEVAMENTO ---
 CAMPIONI_PER_LETTURA = 1
-# --- MODIFICA V 1.13 ---
-BUFFER_SIZE = 35  # Ridotto da 50
-# --- FINE MODIFICA V 1.13 ---
+# --- MODIFICA V 1.16: BUFFER_SIZE rimosso da qui ---
 LOOP_SLEEP_TIME = 0.1
 STATE_PERSISTENCE_SECONDS = 0.5
 BLINK_THRESHOLD_PERCENT = 0.25
-# --- MODIFICA V 1.13 ---
-MIN_TRANSITIONS_FOR_BLINK = 4  # Ridotto da 6
-# --- FINE MODIFICA V 1.13 ---
+MIN_TRANSITIONS_FOR_BLINK = 4
 
 # --- CONFIGURAZIONE DEBUG LOGGING (V 1.06) ---
 MAX_DEBUG_LINES = 5000
@@ -303,10 +300,19 @@ def main():
     integration_time = calibrated_data.get('integration_time', 250)
     gain = calibrated_data.get('gain', 4)
 
+    # --- MODIFICA V 1.16: Carica BUFFER_SIZE da config ---
+    BUFFER_SIZE = calibrated_data.get('buffer_size', 35)
+    # --- FINE MODIFICA V 1.16 ---
+
     if integration_time == 250 and 'integration_time' not in calibrated_data:
         print("⚠️  'integration_time' non trovato in config, uso default: 250ms")
     if gain == 4 and 'gain' not in calibrated_data:
         print("⚠️  'gain' non trovato in config, uso default: 4x")
+    # --- MODIFICA V 1.16 ---
+    if BUFFER_SIZE == 35 and 'buffer_size' not in calibrated_data:
+        print("⚠️  'buffer_size' non trovato in config, uso default: 35")
+    print(f"ℹ️  Buffer operativo impostato a {BUFFER_SIZE} letture.")
+    # --- FINE MODIFICA V 1.16 ---
 
     sensor = inizializza_sensore(integration_time, gain)
     if not sensor:
@@ -321,17 +327,18 @@ def main():
     MACHINE_ID = calibrated_data.get("machine_id")
     MQTT_TOPIC_STATUS = f"bma/{MACHINE_ID}/semaforo/stato"
 
-    # --- MODIFICA V 1.13 ---
+    # --- MODIFICA V 1.13 (invariata) ---
     INIT_BUFFER_SIZE = 20
     print(f"Avvio... (Inizializzazione buffer... {INIT_BUFFER_SIZE} letture)")
-    visual_state_buffer = deque(maxlen=BUFFER_SIZE)  # Il buffer operativo resta {BUFFER_SIZE}
+    # --- MODIFICA V 1.16: Usa il BUFFER_SIZE caricato ---
+    visual_state_buffer = deque(maxlen=BUFFER_SIZE)
+    # --- FINE MODIFICA V 1.16 ---
 
     for i in range(INIT_BUFFER_SIZE):
         stato_iniziale, _ = get_instant_status(sensor, calibrated_data)
         visual_state_buffer.append(stato_iniziale)
         print(f"   Lettura... {i + 1}/{INIT_BUFFER_SIZE} -> {stato_iniziale}   ", end="\r")
         time.sleep(LOOP_SLEEP_TIME)
-        # --- FINE MODIFICA V 1.13 ---
 
     print("\n✅ Inizializzazione completata.")
 
