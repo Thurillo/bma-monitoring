@@ -2,19 +2,16 @@
 # ---
 # File: monitor_semaforo_TCS.py
 # Directory: [root]
-# Ultima Modifica: 2025-11-13
-# Versione: 1.04
+# Ultima Modifica: 2025-11-14
+# Versione: 1.06
 # ---
 
 """
 MONITOR SEMAFORO - Versione TCS34725 (4 Stati)
 
-Questo script sostituisce la logica OpenCV con un sensore TCS34725.
-Implementa una logica a 4 stati (ROSSO, VERDE, ATTESA, SPENTO) analizzando
-un buffer di letture per distinguere tra fisso e lampeggiante.
-
-Versione stabile con output di log su singola riga (con timestamp)
-e gestione MQTT non bloccante.
+V 1.06:
+- Modificata logica di debug: ora salva in 'LOG/'
+- Implementata rotazione dei file di log ogni 5000 righe.
 """
 
 import time
@@ -22,7 +19,7 @@ import json
 import sys
 import os
 from collections import deque
-from datetime import datetime  # Importato per il timestamp
+from datetime import datetime
 
 try:
     import paho.mqtt.client as mqtt
@@ -35,54 +32,56 @@ except ImportError:
     sys.exit(1)
 
 # --- CONFIGURAZIONE LOGICA DI RILEVAMENTO ---
-# Numero di campioni da mediare per una singola lettura (più alto = più stabile)
 CAMPIONI_PER_LETTURA = 1
-# Numero di letture da tenere in memoria (più alto = analisi più lunga)
-BUFFER_SIZE = 30  # Aumentato per maggiore stabilità
-# Pausa tra i cicli di lettura E timeout per il loop MQTT
-LOOP_SLEEP_TIME = 0.1  # Stabile per MQTT
-# Secondi di "SPENTO" prima di pubblicare lo stato SPENTO
+BUFFER_SIZE = 30
+LOOP_SLEEP_TIME = 0.1
 STATE_PERSISTENCE_SECONDS = 0.5
 
-# --- MODIFICHE V 1.04: Parametri resi più severi per evitare 'flutter' ---
-# Soglia per il lampeggio: % di letture "SPENTO" nel buffer per definirlo "ATTESA"
-BLINK_THRESHOLD_PERCENT = 0.25  # (25%) - Aumentato da 0.10
-# Per essere "ATTESA", il buffer deve avere almeno questo numero di cambi (V->S o S->V)
-MIN_TRANSITIONS_FOR_BLINK = 4  # Aumentato da 2
-# --- FINE MODIFICHE V 1.04 ---
+# --- MODIFICHE V 1.05 (STRATEGIA 3): Parametri resi MOLTO severi ---
+BLINK_THRESHOLD_PERCENT = 0.35  # (35%) - Aumentato da 0.25
+MIN_TRANSITIONS_FOR_BLINK = 6  # Aumentato da 4
+# --- FINE MODIFICHE V 1.05 ---
+
+# --- NUOVA CONFIGURAZIONE V 1.06 (STRATEGIA 1): DEBUG LOGGING ---
+DEBUG_LOGGING = True  # Attiva/Disattiva il log CSV
+MAX_DEBUG_LINES = 5000  # Limite righe per il file di debug
+# --- FINE CONFIGURAZIONE ---
 
 # --- CONFIGURAZIONE MQTT (e Percorsi) ---
-# Rimossi MACHINE_ID e MQTT_TOPIC_STATUS da qui.
-# Verranno caricati dal file JSON.
 MQTT_BROKER = "192.168.20.163"
 MQTT_PORT = 1883
 MQTT_USERNAME = "shima"
 MQTT_PASSWORD = "shima"
-# --- NUOVA AGGIUNTA: Topic di trigger globale ---
 MQTT_TRIGGER_TOPIC = "bma/cambiostato"
 # ----------------------------------------------
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_DIR = os.path.join(SCRIPT_DIR, "config")
 CALIBRATION_FILE = os.path.join(CONFIG_DIR, "calibrazione.json")
 
+# --- V 1.06: Percorso per la cartella LOG ---
+LOG_DIR = os.path.join(SCRIPT_DIR, "LOG")
+# --- FINE V 1.06 ---
+
 # --- VARIABILE GLOBALE PER STATO CONNESSIONE ---
 is_mqtt_connected = False
-
-
 # ----------------------------------------
+
+# --- V 1.06: Variabili Globali per Logging ---
+current_log_file_path = None
+current_log_line_count = 0
+CSV_HEADER = "Timestamp,R,G,B,StatoIstantaneo,StatoComposito\n"
+
+
+# --- FINE V 1.06 ---
 
 # --- Inizializzazione Hardware ---
 
 def inizializza_sensore(integration_time):
-    """
-    Inizializza il sensore TCS34725.
-    Accetta integration_time come argomento per garantire la coerenza.
-    """
+    """Inizializza il sensore TCS34725."""
     print("🔧 Inizializzazione sensore TCS34725...")
     try:
         i2c = busio.I2C(board.SCL, board.SDA)
         sensor = adafruit_tcs34725.TCS34725(i2c)
-        # Impostazioni per alta sensibilità (caricate da config)
         sensor.integration_time = integration_time
         sensor.gain = 16
         print(f"✅ Sensore inizializzato (Time: {integration_time}ms, Gain: 16x).")
@@ -104,7 +103,6 @@ def carica_calibrazione():
     try:
         with open(CALIBRATION_FILE, 'r') as f:
             data = json.load(f)
-        # Modifichiamo il controllo per assicurarci che i colori ci siano
         if "verde" not in data or "non_verde" not in data or "buio" not in data:
             print("❌ ERRORE: File di calibrazione incompleto (mancano i colori).")
             print("   Esegui 'utils/calibra_sensore.py' per ricalibrare.")
@@ -118,7 +116,6 @@ def carica_calibrazione():
 
 
 # --- Funzioni di Lettura e Analisi ---
-# ... (Funzioni leggi_rgb_attuale, leggi_rgb_stabilizzato, calcola_distanza_rgb, get_instant_status... invariate) ...
 
 def leggi_rgb_attuale(sens):
     """Esegue una singola lettura RGB, con fallback."""
@@ -126,13 +123,12 @@ def leggi_rgb_attuale(sens):
         result = sens.color_rgb_bytes
         if len(result) >= 3: return result[:3]
     except Exception:
-        pass  # Tenta con il metodo raw
+        pass
     try:
-        # Metodo di fallback
         raw = sens.color_raw
         return min(255, int(raw[0] / 256)), min(255, int(raw[1] / 256)), min(255, int(raw[2] / 256))
     except Exception:
-        return 0, 0, 0  # Errore grave
+        return 0, 0, 0
 
 
 def leggi_rgb_stabilizzato(sensor, campioni=CAMPIONI_PER_LETTURA):
@@ -146,8 +142,8 @@ def leggi_rgb_stabilizzato(sensor, campioni=CAMPIONI_PER_LETTURA):
             tot_g += g;
             tot_b += b
         except Exception:
-            pass  # Ignora letture fallite
-        time.sleep(0.01)  # Piccola pausa tra i campioni
+            pass
+        time.sleep(0.01)
 
     if letture_valide == 0: return {"R": 0, "G": 0, "B": 0}
     return {"R": int(tot_r / letture_valide), "G": int(tot_g / letture_valide), "B": int(tot_b / letture_valide)}
@@ -161,17 +157,11 @@ def calcola_distanza_rgb(rgb1, rgb2):
 
 
 def get_instant_status(sensor, calib_data):
-    """
-    Legge il sensore e determina lo stato istantaneo (ROSSO, VERDE, SPENTO)
-    in base alla distanza minima dai valori calibrati.
-
-    Restituisce (stato, rgb_letto)
-    """
+    """Determina lo stato istantaneo (ROSSO, VERDE, SPENTO)."""
     rgb_medio = leggi_rgb_stabilizzato(sensor)
 
     if not rgb_medio: return "SPENTO", {"R": 0, "G": 0, "B": 0}
 
-    # Calcola la distanza da ogni stato calibrato
     dist_verde = calcola_distanza_rgb(rgb_medio, calib_data['verde'])
     dist_rosso = calcola_distanza_rgb(rgb_medio, calib_data['non_verde'])
     dist_buio = calcola_distanza_rgb(rgb_medio, calib_data['buio'])
@@ -182,60 +172,91 @@ def get_instant_status(sensor, calib_data):
         "SPENTO": dist_buio
     }
 
-    # Lo stato è quello con la distanza minore
     stato_piu_vicino = min(distanze, key=distanze.get)
     return stato_piu_vicino, rgb_medio
 
 
 def analyze_state_buffer(buffer):
-    """
-    Analizza il buffer delle letture per determinare lo stato composito
-    (ROSSO, VERDE, ATTESA, SPENTO).
-    """
+    """Analizza il buffer per determinare lo stato composito."""
     rosso_count = buffer.count("ROSSO")
     verde_count = buffer.count("VERDE")
     spento_count = buffer.count("SPENTO")
 
-    # REGOLA 1: Se c'è ROSSO nel buffer, è sempre ROSSO (massima priorità)
+    # REGOLA 1: ROSSO ha priorità
     if rosso_count > 0:
         return "ROSSO"
 
-    # REGOLA 2: Se c'è VERDE e non c'è ROSSO
+    # REGOLA 2: VERDE (fisso o lampeggiante)
     if verde_count > 0:
         percent_spento = spento_count / len(buffer)
 
-        # È un candidato al lampeggio (contiene sia VERDE che SPENTO)?
-        if percent_spento >= BLINK_THRESHOLD_PERCENT:  # Modifica V1.04 (ora 25%)
-
-            # Controlla se è un VERO lampeggio (tanti cambi V->S)
-            # o solo una transizione (1-2 cambi V->S)
+        # Candidato al lampeggio? (V1.05: ora 35%)
+        if percent_spento >= BLINK_THRESHOLD_PERCENT:
             transitions = 0
             for i in range(len(buffer) - 1):
-                # Controlla solo i cambi VERDE/SPENTO
                 if (buffer[i] == "VERDE" and buffer[i + 1] == "SPENTO") or \
                         (buffer[i] == "SPENTO" and buffer[i + 1] == "VERDE"):
                     transitions += 1
 
-            if transitions >= MIN_TRANSITIONS_FOR_BLINK:  # Modifica V1.04 (ora 4)
-                # Ci sono abbastanza cambi -> È un VERO LAMPEGGIO
+            # VERO lampeggio? (V1.05: ora 6 transizioni)
+            if transitions >= MIN_TRANSITIONS_FOR_BLINK:
                 return "ATTESA"
             else:
-                # Non ci sono abbastanza cambi -> È una TRANSIZIONE
-                # Decide lo stato in base a cosa c'è di più nel buffer
+                # È una TRANSIZIONE, decide lo stato dominante
                 if verde_count > spento_count:
                     return "VERDE"
                 else:
                     return "SPENTO"
-
         else:
-            # Non è un candidato al lampeggio (è VERDE solido)
+            # VERDE solido
             return "VERDE"
 
-    # REGOLA 3: Se non c'è né ROSSO né VERDE, è SPENTO
+    # REGOLA 3: SPENTO
     return "SPENTO"
 
 
-# --- Funzioni MQTT (Modificate) ---
+# --- FUNZIONE LOGGING V 1.06 (STRATEGIA 1): ROTAZIONE FILE ---
+def write_debug_log(timestamp_str, rgb, instant_state, composite_state):
+    """Scrive sul file di debug CSV, gestendo la rotazione del file."""
+    global current_log_file_path, current_log_line_count
+
+    if not DEBUG_LOGGING:
+        return
+
+    try:
+        # Controlla se dobbiamo creare un nuovo file
+        # (o se è la prima scrittura, o se il file è pieno)
+        if current_log_file_path is None or current_log_line_count >= MAX_DEBUG_LINES:
+            # 1. Genera nuovo nome file
+            now_filename = datetime.now().strftime('%Y-%m-%d_%H%M%S')
+            new_filename = f"debug_log_{now_filename}.csv"
+            current_log_file_path = os.path.join(LOG_DIR, new_filename)
+
+            # 2. Scrive l'header
+            with open(current_log_file_path, 'w') as f:  # 'w' to create/overwrite
+                f.write(CSV_HEADER)
+
+            # 3. Resetta il contatore (header è linea 1)
+            current_log_line_count = 1
+
+            # 4. Formatta la linea
+        line = f"{timestamp_str},{rgb['R']},{rgb['G']},{rgb['B']},{instant_state},{composite_state}\n"
+
+        # 5. Aggiunge la linea al file corrente (append)
+        with open(current_log_file_path, 'a') as f:
+            f.write(line)
+
+        # 6. Incrementa il contatore
+        current_log_line_count += 1
+
+    except Exception as e:
+        print(f"   ⚠️ Errore scrittura debug log: {e}")
+
+
+# --- FINE FUNZIONE V 1.06 ---
+
+
+# --- Funzioni MQTT ---
 
 def on_connect(client, userdata, flags, rc, properties):
     """Callback per quando ci si connette al broker."""
@@ -251,55 +272,49 @@ def on_connect(client, userdata, flags, rc, properties):
 def on_disconnect(client, userdata, flags, reason_code, properties):
     """Callback per quando ci si disconnette."""
     global is_mqtt_connected
-    is_mqtt_connected = False  # Imposta lo stato a disconnesso
+    is_mqtt_connected = False
     print(f"⚠️ Disconnesso dal broker MQTT. Reason code: {reason_code}")
     if reason_code != 0:
         print("   Tentativo di riconnessione automatica gestito da Paho-MQTT...")
 
 
-# ... (Funzioni di lettura e analisi invariate) ...
 # --- Ciclo Principale ---
 
 def main():
-    global is_mqtt_connected  # Aggiunto per riferimento
+    global is_mqtt_connected
 
-    # Carica la configurazione prima di inizializzare l'hardware
     calibrated_data = carica_calibrazione()
     if not calibrated_data:
         print("Impossibile avviare. File di calibrazione mancante o corrotto.")
         return
 
-    # --- CARICAMENTO DINAMICO INTEGRATION TIME ---
-    # Carica il tempo di integrazione dal file JSON.
-    # Usa 250 come default sicuro se non è specificato.
+    # --- V 1.06: Crea la cartella LOG se non esiste ---
+    global DEBUG_LOGGING  # Riferimento per poterla disabilitare in caso di errore
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+    except Exception as e:
+        print(f"❌ ERRORE: Impossibile creare la directory LOG: {e}")
+        print("   Il debug logging CSV sarà disabilitato.")
+        DEBUG_LOGGING = False
+    # --- FINE V 1.06 ---
+
     integration_time = calibrated_data.get('integration_time', 250)
     if integration_time == 250 and 'integration_time' not in calibrated_data:
         print("⚠️  'integration_time' non trovato in config, uso default: 250ms")
-    # --- FINE CARICAMENTO ---
 
-    # Inizializza il sensore *passando* il tempo di integrazione
     sensor = inizializza_sensore(integration_time)
     if not sensor:
         print("Impossibile avviare. Controlla hardware.")
         return
 
-    # --- CARICAMENTO DINAMICO MACHINE_ID ---
-    # Carica l'ID Macchina e imposta il Topic MQTT
     if "machine_id" not in calibrated_data or not calibrated_data["machine_id"]:
         print(f"❌ ERRORE: 'machine_id' non trovato o non impostato in '{CALIBRATION_FILE}'.")
         print(f"   Esegui 'utils/calibra_sensore.py' e imposta un ID Macchina (Opzione 4).")
         return
 
-    MACHINE_ID = calibrated_data.get("machine_id")  # Usiamo .get() per sicurezza
-    if not MACHINE_ID:
-        print(f"❌ ERRORE: 'machine_id' non trovato o non impostato in '{CALIBRATION_FILE}'.")
-
-    # --- MODIFICA V 1.03: Definisci MQTT_TOPIC_STATUS qui ---
+    MACHINE_ID = calibrated_data.get("machine_id")
     MQTT_TOPIC_STATUS = f"bma/{MACHINE_ID}/semaforo/stato"
-    # --- FINE MODIFICA ---
 
-    # --- FASE DI INIZIALIZZAZIONE BUFFER ---
-    # Riempe il buffer con letture reali per evitare uno stato iniziale errato.
     print(f"Avvio... (Inizializzazione buffer... {BUFFER_SIZE} letture)")
     visual_state_buffer = deque(maxlen=BUFFER_SIZE)
 
@@ -307,35 +322,29 @@ def main():
         stato_iniziale, _ = get_instant_status(sensor, calibrated_data)
         visual_state_buffer.append(stato_iniziale)
         print(f"   Lettura... {i + 1}/{BUFFER_SIZE} -> {stato_iniziale}   ", end="\r")
-        # Applica una pausa per non sovraccaricare il sensore all'avvio
         time.sleep(LOOP_SLEEP_TIME)
 
     print("\n✅ Inizializzazione completata.")
 
-    # Inizializzazione client MQTT
-    # L'ID client ORA è dinamico
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=MACHINE_ID)
     client.on_connect, client.on_disconnect = on_connect, on_disconnect
     client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
     client.reconnect_delay_set(min_delay=1, max_delay=30)
 
-    # --- TENTATIVO DI CONNESSIONE INIZIALE ---
     try:
         client.connect(MQTT_BROKER, MQTT_PORT, 60)
     except Exception as e:
         print(f"❌ Errore di connessione MQTT iniziale: {e}")
-        # Lo script continuerà, e la libreria paho tenterà
-        # la riconnessione in background grazie al client.loop()
-    # --- FINE TENTATIVO ---
 
     stato_pubblicato = None
     last_published_change_time = 0
+
+    prev_composite_state = None  # Per tracciare i cambi per il debug log
 
     print("Monitoraggio attivo.")
 
     try:
         while True:
-            # --- Lettura e Analisi ---
             stato_corrente, rgb_corrente = get_instant_status(sensor, calibrated_data)
             visual_state_buffer.append(stato_corrente)
 
@@ -344,64 +353,47 @@ def main():
             # --- Logica di Pubblicazione ---
             stato_da_pubblicare = None
             if stato_composito != "SPENTO":
-                # Se lo stato è ROSSO, VERDE o ATTESA, pubblicalo subito
                 stato_da_pubblicare = stato_composito
-                # Aggiorna il timer solo se lo stato *cambia*
                 if stato_composito != stato_pubblicato:
                     last_published_change_time = time.time()
             else:
-                # Se lo stato è SPENTO, applica la persistenza
                 if time.time() - last_published_change_time > STATE_PERSISTENCE_SECONDS:
                     stato_da_pubblicare = "SPENTO"
                 else:
-                    # Non è passato abbastanza tempo, mantieni l'ultimo stato pubblicato
                     stato_da_pubblicare = stato_pubblicato
+
+                    # --- DEBUG LOGGING (STRATEGIA 1) V 1.06 ---
+            # Registra solo se lo stato composito cambia (per debug oscillazioni)
+            if stato_composito != prev_composite_state:
+                now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                write_debug_log(now_str, rgb_corrente, stato_corrente, stato_composito)
+                prev_composite_state = stato_composito  # Aggiorna lo stato precedente
+            # --- FINE DEBUG LOGGING ---
 
             if stato_da_pubblicare != stato_pubblicato:
                 stato_pubblicato = stato_da_pubblicare
-                # Aggiorna il timer solo quando pubblichiamo un *cambio* reale
                 last_published_change_time = time.time()
 
                 timestamp = time.time()
                 datetime_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(timestamp))
 
-                # --- MODIFICA CORRETTIVA ---
-                # 1. Crea il dizionario dati (come prima)
                 payload_data = {
                     "stato": stato_pubblicato, "machine_id": MACHINE_ID,
                     "timestamp": timestamp, "datetime_str": datetime_str
                 }
-                # 2. Annida i dati dentro l'oggetto "message" come richiesto da n8n
                 payload = json.dumps({"message": payload_data})
-                # --- FINE MODIFICA CORRETTIVA ---
 
-                # --- Pubblicazione Semplificata ---
                 if is_mqtt_connected:
                     try:
-                        # 1. Pubblica lo stato completo (ora annidato) sul topic della macchina
                         client.publish(MQTT_TOPIC_STATUS, payload, qos=1, retain=True)
-
-                        # 2. Pubblica lo STESSO payload completo sul topic di trigger
                         client.publish(MQTT_TRIGGER_TOPIC, payload, qos=1, retain=True)
-
-                        # Stampa il log con il timestamp
                         print(
                             f"[{datetime_str}] Stato Pubblicato: {stato_pubblicato}. Invio trigger a '{MQTT_TRIGGER_TOPIC}'...")
                     except Exception as e:
-                        # Se la pubblicazione fallisce, la connessione è probabilmente persa
-                        # on_disconnect verrà chiamato e imposterà is_mqtt_connected = False
                         print(f"   ⚠️ Errore durante la pubblicazione MQTT: {e}. In attesa di riconnessione...")
                 else:
-                    # Non fare nulla se non siamo connessi.
-                    # Paho-MQTT tenterà di riconnettersi in background.
-                    # I messaggi inviati durante la disconnessione vengono persi
-                    # (come da rimozione della logica di coda).
                     print(f"[{datetime_str}] Rilevato cambio: {stato_pubblicato}. MQTT OFFLINE. Messaggio non inviato.")
-                # --- FINE MODIFICA ---
 
-            # --- MODIFICA CRITICA per MQTT ---
-            # Gestisce la rete (incluso il keepalive) E funge da pausa.
-            # Sostituisce client.loop_start() e time.sleep()
             client.loop(timeout=LOOP_SLEEP_TIME)
 
     except KeyboardInterrupt:
