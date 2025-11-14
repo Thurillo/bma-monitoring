@@ -3,18 +3,17 @@
 # File: monitor_semaforo_TCS.py
 # Directory: [root]
 # Ultima Modifica: 2025-11-14
-# Versione: 1.09
+# Versione: 1.10
 # ---
 
 """
 MONITOR SEMAFORO - Versione TCS34725 (4 Stati)
 
-V 1.09:
-- Aggiunta lettura GAIN da file di calibrazione.
-- Il gain (sensibilità) è ora configurabile
-  per ridurre il "rumore di fondo" (noise floor)
-  che causa i falsi rilevamenti di SPENTO.
-- Default impostato a 4x (invece di 16x).
+V 1.10:
+- Corretto AttributeError in 'inizializza_sensore'.
+- La libreria TCS34725 non usa costanti (es. GAIN_4X)
+  ma accetta direttamente il valore intero (es. 4)
+  per la proprietà 'sensor.gain'.
 """
 
 import time
@@ -70,7 +69,7 @@ DEBUG_LOGGING_ENABLED = False
 
 # --- Inizializzazione Hardware ---
 
-# --- MODIFICA V 1.09: Aggiunto 'gain' ---
+# --- MODIFICA V 1.10: Correzione GAIN ---
 def inizializza_sensore(integration_time, gain):
     """Inizializza il sensore TCS34725."""
     print("🔧 Inizializzazione sensore TCS34725...")
@@ -79,18 +78,14 @@ def inizializza_sensore(integration_time, gain):
         sensor = adafruit_tcs34725.TCS34725(i2c)
         sensor.integration_time = integration_time
 
-        # Mappa il valore numerico del gain all'impostazione della libreria
-        if gain == 1:
-            sensor.gain = adafruit_tcs34725.GAIN_1X
-        elif gain == 4:
-            sensor.gain = adafruit_tcs34725.GAIN_4X
-        elif gain == 16:
-            sensor.gain = adafruit_tcs34725.GAIN_16X
-        elif gain == 60:
-            sensor.gain = adafruit_tcs34725.GAIN_60X
+        # CORREZIONE: Imposta 'sensor.gain' usando il valore intero (1, 4, 16, 60)
+        # La libreria non usa costanti come GAIN_4X.
+        if gain in [1, 4, 16, 60]:
+            sensor.gain = gain
         else:
             print(f"   ⚠️ Gain {gain} non valido, imposto 4x.")
-            sensor.gain = adafruit_tcs34725.GAIN_4X
+            sensor.gain = 4
+            gain = 4  # Aggiorna la variabile per il log
 
         print(f"✅ Sensore inizializzato (Time: {integration_time}ms, Gain: {gain}x).")
         return sensor
@@ -99,6 +94,8 @@ def inizializza_sensore(integration_time, gain):
         print(f"   Dettagli: {e}")
         return None
 
+
+# --- FINE MODIFICA V 1.10 ---
 
 def carica_calibrazione():
     """Carica i dati di calibrazione dal file JSON."""
@@ -297,15 +294,13 @@ def main():
             print("   Il debug logging CSV sarà disabilitato.")
             DEBUG_LOGGING_ENABLED = False
 
-    # --- MODIFICA V 1.09: Leggi integration_time e gain ---
     integration_time = calibrated_data.get('integration_time', 250)
-    gain = calibrated_data.get('gain', 4)  # Default a 4x (invece di 16)
+    gain = calibrated_data.get('gain', 4)
 
     if integration_time == 250 and 'integration_time' not in calibrated_data:
         print("⚠️  'integration_time' non trovato in config, uso default: 250ms")
     if gain == 4 and 'gain' not in calibrated_data:
         print("⚠️  'gain' non trovato in config, uso default: 4x")
-    # --- FINE MODIFICA V 1.09 ---
 
     sensor = inizializza_sensore(integration_time, gain)
     if not sensor:
