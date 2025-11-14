@@ -3,18 +3,18 @@
 # File: monitor_semaforo_TCS.py
 # Directory: [root]
 # Ultima Modifica: 2025-11-14
-# Versione: 1.16
+# Versione: 1.17
 # ---
 
 """
 MONITOR SEMAFORO - Versione TCS34725 (4 Stati)
 
-V 1.16:
-- BUFFER_SIZE (operativo) non è più hardcoded (era 35).
-- Ora carica 'buffer_size' da 'calibrazione.json'.
-- Se non lo trova, usa 35 come default.
-- INIT_BUFFER_SIZE (avvio) rimane 20 (hardcoded)
-  come da richiesta.
+V 1.17:
+- Ridotti i requisiti per lo stato ATTESA per
+  aumentare la stabilità e prevenire l'oscillazione
+  tra ATTESA e VERDE.
+- BLINK_THRESHOLD_PERCENT: 0.25 -> 0.15 (15%)
+- MIN_TRANSITIONS_FOR_BLINK: 4 -> 2
 """
 
 import time
@@ -36,11 +36,12 @@ except ImportError:
 
 # --- CONFIGURAZIONE LOGICA DI RILEVAMENTO ---
 CAMPIONI_PER_LETTURA = 1
-# --- MODIFICA V 1.16: BUFFER_SIZE rimosso da qui ---
 LOOP_SLEEP_TIME = 0.1
 STATE_PERSISTENCE_SECONDS = 0.5
-BLINK_THRESHOLD_PERCENT = 0.25
-MIN_TRANSITIONS_FOR_BLINK = 4
+# --- MODIFICA V 1.17 ---
+BLINK_THRESHOLD_PERCENT = 0.15
+MIN_TRANSITIONS_FOR_BLINK = 2
+# --- FINE MODIFICA V 1.17 ---
 
 # --- CONFIGURAZIONE DEBUG LOGGING (V 1.06) ---
 MAX_DEBUG_LINES = 5000
