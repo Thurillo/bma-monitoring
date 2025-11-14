@@ -3,17 +3,18 @@
 # File: calibra_sensore.py
 # Directory: utils/
 # Ultima Modifica: 2025-11-14
-# Versione: 1.10
+# Versione: 1.12
 # ---
 
 """
 SCRIPT: CALIBRAZIONE MANUALE (Ambiente Reale)
 
-V 1.10:
-- Corretto AttributeError in 'inizializza_sensore'.
-- La libreria TCS34725 non usa costanti (es. GAIN_4X)
-  ma accetta direttamente il valore intero (es. 4)
-  per la proprietà 'sensor.gain'.
+V 1.12:
+- Aggiunta la logica di campionamento del "Picco" (Peak).
+- Obbliga l'utente a calibrare 'Spento' (Buio) prima
+  di calibrare 'Verde' o 'Rosso'.
+- Questo evita che il lampeggiante 'corrompa' la media
+  della calibrazione.
 """
 
 import board
@@ -29,15 +30,28 @@ import threading
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_DIR = os.path.join(SCRIPT_DIR, "..", "config")
 FILE_CALIBRAZIONE = os.path.join(CONFIG_DIR, "calibrazione.json")
-CAMPIONI_PER_LETTURA = 10
+
+# Per la media (stato SPENTO)
+CAMPIONI_PER_MEDIA = 10
+# Per il picco (stati VERDE/ROSSO)
+CAMPIONI_PER_LETTURA_PICCO = 3  # Lettura veloce stabilizzata
+NUMERO_LETTURE_PICCO = 15  # Campiona per circa 4-5 secondi
+
 VALID_GAINS = [1, 4, 16, 60]
 
 dati_calibrazione_temporanei = {}
 stop_live_thread = threading.Event()
 
 
+# --- Funzioni di Distanza ---
+def calcola_distanza_rgb_raw(rgb1_tuple, rgb2_dict):
+    """Calcola distanza tra una tupla (lettura) e un dict (calibrazione)."""
+    r1, g1, b1 = rgb1_tuple
+    r2, g2, b2 = rgb2_dict['R'], rgb2_dict['G'], rgb2_dict['B']
+    return ((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2) ** 0.5
+
+
 # --- Inizializzazione Hardware ---
-# --- MODIFICA V 1.10: Correzione GAIN ---
 def inizializza_sensore():
     print("🔧 Inizializzazione sensore TCS34725...")
     integration_time = dati_calibrazione_temporanei.get('integration_time', 250)
@@ -48,14 +62,12 @@ def inizializza_sensore():
         sensor = adafruit_tcs34725.TCS34725(i2c)
         sensor.integration_time = integration_time
 
-        # CORREZIONE: Imposta 'sensor.gain' usando il valore intero (1, 4, 16, 60)
-        # La libreria non usa costanti come GAIN_4X.
         if gain in VALID_GAINS:
             sensor.gain = gain
         else:
             print(f"   ⚠️ Gain {gain} non valido, imposto 4x.")
             sensor.gain = 4
-            dati_calibrazione_temporanei['gain'] = 4  # Corregge il config
+            dati_calibrazione_temporanei['gain'] = 4
             gain = 4
 
         print(f"✅ Sensore inizializzato (Time: {integration_time}ms, Gain: {gain}x).")
@@ -66,10 +78,9 @@ def inizializza_sensore():
         return None
 
 
-# --- FINE MODIFICA V 1.10 ---
-
 # --- Funzioni di Lettura ---
 def leggi_rgb_attuale(sens):
+    """Legge la tupla (R, G, B) attuale."""
     try:
         result = sens.color_rgb_bytes
         if len(result) >= 3: return result[:3]
@@ -82,9 +93,10 @@ def leggi_rgb_attuale(sens):
         return 0, 0, 0
 
 
-def leggi_rgb_stabilizzato(sensor, campioni=CAMPIONI_PER_LETTURA):
+def leggi_rgb_media(sensor, campioni=CAMPIONI_PER_MEDIA):
+    """Calcola la MEDIA di N campioni (per lo stato SPENTO)."""
     tot_r, tot_g, tot_b, letture_valide = 0, 0, 0, 0
-    print(f"   Avvio campionamento ({campioni} letture)...")
+    print(f"   Avvio campionamento MEDIA ({campioni} letture)...")
     for i in range(campioni):
         r, g, b = 0, 0, 0
         try:
@@ -97,12 +109,47 @@ def leggi_rgb_stabilizzato(sensor, campioni=CAMPIONI_PER_LETTURA):
         except Exception:
             print(f"   Lettura {i + 1}/{campioni}: FALLITA")
         time.sleep(0.05)
-    print("\n   ...Campionamento completato.")
+    print("\n   ...Campionamento MEDIA completato.")
     if letture_valide == 0: return {"R": 0, "G": 0, "B": 0}
-    avg_r = int(tot_r / letture_valide)
-    avg_g = int(tot_g / letture_valide)
-    avg_b = int(tot_b / letture_valide)
-    return {"R": avg_r, "G": avg_g, "B": avg_b}
+    return {
+        "R": int(tot_r / letture_valide),
+        "G": int(tot_g / letture_valide),
+        "B": int(tot_b / letture_valide)
+    }
+
+
+def leggi_rgb_picco(sensor, valore_spento_dict):
+    """
+    Calcola il PICCO di N letture (per stati VERDE/ROSSO lampeggianti).
+    Trova la lettura più LONTANA dal valore SPENTO.
+    """
+    print(f"   Avvio campionamento PICCO ({NUMERO_LETTURE_PICCO} letture, ~4-5 sec)...")
+
+    picco_rgb_tuple = (0, 0, 0)
+    max_distanza = -1
+
+    # Calcola il tempo di pausa in base all'integration time
+    # per un ciclo di circa 0.25-0.3 sec
+    integration_time = sensor.integration_time / 1000.0  # in secondi
+    pausa = max(0.05, 0.25 - integration_time)
+
+    for i in range(NUMERO_LETTURE_PICCO):
+        # Facciamo una mini-media di 3 letture per stabilizzare il picco
+        lettura_stabile_dict = leggi_rgb_media(sensor, campioni=CAMPIONI_PER_LETTURA_PICCO)
+        lettura_stabile_tuple = (lettura_stabile_dict["R"], lettura_stabile_dict["G"], lettura_stabile_dict["B"])
+
+        distanza = calcola_distanza_rgb_raw(lettura_stabile_tuple, valore_spento_dict)
+
+        print(f"   Campionamento {i + 1}/{NUMERO_LETTURE_PICCO}: Dist. da Spento={distanza:.1f}", end="\r")
+
+        if distanza > max_distanza:
+            max_distanza = distanza
+            picco_rgb_tuple = lettura_stabile_tuple
+
+        time.sleep(pausa)
+
+    print("\n   ...Campionamento PICCO completato.")
+    return {"R": picco_rgb_tuple[0], "G": picco_rgb_tuple[1], "B": picco_rgb_tuple[2]}
 
 
 def debug_lettura_live_thread():
@@ -173,9 +220,9 @@ def stampa_menu():
     debug_logging = dati_calibrazione_temporanei.get('debug_logging', False)
     stato_debug = "✅ ABILITATO" if debug_logging else "❌ DISABILITATO"
 
-    print(f"1. Campiona 'Verde' (luce fissa o lampeggiante)  {stato_verde}")
-    print(f"2. Campiona 'Rosso' (luce fissa o lampeggiante)  {stato_rosso}")
-    print(f"3. Campiona 'Spento' (fisso)                     {stato_buio}")
+    print(f"1. Campiona 'Verde' (PICCO luce)                 {stato_verde}")
+    print(f"2. Campiona 'Rosso' (PICCO luce)                 {stato_rosso}")
+    print(f"3. Campiona 'Spento' (MEDIA buio)                {stato_buio}")
     print("-" * 55)
     print(f"4. Imposta ID Macchina (per MQTT)                  {stato_id}")
     print(f"5. Imposta Tempo Integrazione (Sensore)          {stato_integrazione}")
@@ -274,32 +321,41 @@ def main():
 
         scelta = input("Inserisci la tua scelta (1-9): ")
 
-        if scelta == '1':
-            print("\n--- 1. Campiona VERDE ---")
-            print("Ora fai in modo che la macchina mostri la luce VERDE.")
-            input("Quando è pronta, premi INVIO per avviare il campionamento...")
-            valore = leggi_rgb_stabilizzato(sensor_main)
-            dati_calibrazione_temporanei["verde"] = valore
-            print(f"✅ 'Verde' registrato: {valore}")
+        if scelta == '1' or scelta == '2':  # VERDE o ROSSO (PICCO)
+            # --- NUOVA LOGICA V 1.12 ---
+            if 'buio' not in dati_calibrazione_temporanei:
+                print("\n❌ ERRORE: Devi calibrare 'Spento' (Opzione 3) PRIMA di calibrare Verde o Rosso.")
+                time.sleep(2)
+                continue  # Torna al menu
+
+            valore_spento = dati_calibrazione_temporanei['buio']
+
+            if scelta == '1':
+                print("\n--- 1. Campiona PICCO VERDE ---")
+                print("Ora fai in modo che la macchina mostri la luce VERDE (anche lampeggiante).")
+                input("Quando è pronta, premi INVIO per avviare il campionamento (~4-5 sec)...")
+                valore = leggi_rgb_picco(sensor_main, valore_spento)
+                dati_calibrazione_temporanei["verde"] = valore
+                print(f"✅ 'Verde' (Picco) registrato: {valore}")
+
+            else:  # scelta == '2'
+                print("\n--- 2. Campiona PICCO ROSSO ---")
+                print("Ora fai in modo che la macchina mostri la luce ROSSA (anche lampeggiante).")
+                input("Quando è pronta, premi INVIO per avviare il campionamento (~4-5 sec)...")
+                valore = leggi_rgb_picco(sensor_main, valore_spento)
+                dati_calibrazione_temporanei["non_verde"] = valore
+                print(f"✅ 'Rosso' (Picco) registrato: {valore}")
+
             time.sleep(1)
 
-        elif scelta == '2':
-            print("\n--- 2. Campiona ROSSO ---")
-            print("Ora fai in modo che la macchina mostri la luce ROSSA.")
-            input("Quando è pronta, premi INVIO per avviare il campionamento...")
-            valore = leggi_rgb_stabilizzato(sensor_main)
-            dati_calibrazione_temporanei["non_verde"] = valore
-            print(f"✅ 'Rosso' registrato: {valore}")
-            time.sleep(1)
-
-        elif scelta == '3':
-            print("\n--- 3. Campiona SPENTO ---")
+        elif scelta == '3':  # SPENTO (MEDIA)
+            print("\n--- 3. Campiona MEDIA SPENTO ---")
             print("Ora fai in modo che la macchina spenga la luce (stato BUIO).")
             print("CONSIGLIO: Copri il sensore per bloccare la luce ambientale.")
-            input("Quando è pronta, premi INVIO per avviare il campionamento...")
-            valore = leggi_rgb_stabilizzato(sensor_main)
+            input("Quando è pronta, premi INVIO per avviare il campionamento (MEDIA)...")
+            valore = leggi_rgb_media(sensor_main, campioni=CAMPIONI_PER_MEDIA)
             dati_calibrazione_temporanei["buio"] = valore
-            print(f"✅ 'Spento' registrato: {valore}")
+            print(f"✅ 'Spento' (Media) registrato: {valore}")
             time.sleep(1)
 
         elif scelta == '4':
