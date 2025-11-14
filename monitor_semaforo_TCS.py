@@ -3,17 +3,18 @@
 # File: monitor_semaforo_TCS.py
 # Directory: [root]
 # Ultima Modifica: 2025-11-14
-# Versione: 1.10
+# Versione: 1.12
 # ---
 
 """
 MONITOR SEMAFORO - Versione TCS34725 (4 Stati)
 
-V 1.10:
-- Corretto AttributeError in 'inizializza_sensore'.
-- La libreria TCS34725 non usa costanti (es. GAIN_4X)
-  ma accetta direttamente il valore intero (es. 4)
-  per la proprietà 'sensor.gain'.
+V 1.12:
+- Aumentata la tolleranza per lo stato ATTESA, come da richiesta.
+- Aumentato BUFFER_SIZE a 50 per analizzare una finestra
+  di tempo più lunga (~18 secondi), per stabilizzare
+  il rilevamento dei lampeggi e ignorare il 'flutter'.
+- Aumentate le soglie di conseguenza per il nuovo buffer.
 """
 
 import time
@@ -35,11 +36,15 @@ except ImportError:
 
 # --- CONFIGURAZIONE LOGICA DI RILEVAMENTO ---
 CAMPIONI_PER_LETTURA = 1
-BUFFER_SIZE = 30
+# --- MODIFICA V 1.12 ---
+BUFFER_SIZE = 50  # Aumentato da 30 (crea ~18s di finestra di analisi)
+# --- FINE MODIFICA V 1.12 ---
 LOOP_SLEEP_TIME = 0.1
 STATE_PERSISTENCE_SECONDS = 0.5
-BLINK_THRESHOLD_PERCENT = 0.35
-MIN_TRANSITIONS_FOR_BLINK = 6
+# --- MODIFICA V 1.12 ---
+BLINK_THRESHOLD_PERCENT = 0.25  # Aumentato da 0.20
+MIN_TRANSITIONS_FOR_BLINK = 6  # Aumentato da 4
+# --- FINE MODIFICA V 1.12 ---
 
 # --- CONFIGURAZIONE DEBUG LOGGING (V 1.06) ---
 MAX_DEBUG_LINES = 5000
