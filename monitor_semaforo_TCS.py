@@ -3,17 +3,17 @@
 # File: monitor_semaforo_TCS.py
 # Directory: [root]
 # Ultima Modifica: 2025-11-14
-# Versione: 1.13
+# Versione: 1.14
 # ---
 
 """
 MONITOR SEMAFORO - Versione TCS34725 (4 Stati)
 
-V 1.13:
-- Ridotto BUFFER_SIZE (operativo) a 35 (da 50).
-- Ridotto il buffer di INIZIALIZZAZIONE a 20 (da 50).
-- Ridotto MIN_TRANSITIONS_FOR_BLINK a 4 (da 6) per
-  adattarsi al nuovo buffer.
+V 1.14:
+- FIX: Corretto NameError per 'CALIBRATION_FILE'.
+- Ripristinate le definizioni delle costanti di percorso
+  (CONFIG_DIR, CALIBRATION_FILE) che erano
+  state accidentalmente rimosse nella V 1.13.
 """
 
 import time
@@ -56,9 +56,12 @@ MQTT_PORT = 1883
 # ... (codice config esistente) ...
 MQTT_TRIGGER_TOPIC = "bma/cambiostato"
 # ----------------------------------------------
+# --- MODIFICA V 1.14: Ripristino Costanti ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-# ... (codice percorsi esistente) ...
+CONFIG_DIR = os.path.join(SCRIPT_DIR, "config")
+CALIBRATION_FILE = os.path.join(CONFIG_DIR, "calibrazione.json")
 LOG_DIR = os.path.join(SCRIPT_DIR, "LOG")
+# --- FINE MODIFICA V 1.14 ---
 # ----------------------------------------
 
 is_mqtt_connected = False
