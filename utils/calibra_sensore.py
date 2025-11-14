@@ -3,17 +3,18 @@
 # File: calibra_sensore.py
 # Directory: utils/
 # Ultima Modifica: 2025-11-14
-# Versione: 1.15
+# Versione: 1.16
 # ---
 
 """
 SCRIPT: CALIBRAZIONE MANUALE (Ambiente Reale)
 
-V 1.15:
-- Aggiunta Opzione 8 per configurare 'buffer_size'.
-- 'buffer_size' viene salvato in calibrazione.json.
-- Valore di default per 'buffer_size' è 35.
-- Spostati Salva/Esci a 9/10.
+V 1.16:
+- Aggiunta Opzione 9 per configurare 'steady_state_threshold'.
+- Questo valore (es. 95) definisce la % del buffer
+  necessaria per dichiarare VERDE fisso o SPENTO fisso.
+- Salvato in calibrazione.json. Default 95.
+- Spostati Salva/Esci a 10/11.
 """
 
 import board
@@ -249,6 +250,11 @@ def stampa_menu():
     stato_buffer = f"✅ IMPOSTATO ({buffer_size} letture)"
     # --- FINE MODIFICA V 1.15 ---
 
+    # --- MODIFICA V 1.16 ---
+    soglia = dati_calibrazione_temporanei.get('steady_state_threshold', 95)  # Default 95
+    stato_soglia = f"✅ IMPOSTATO ({soglia}%)"
+    # --- FINE MODIFICA V 1.16 ---
+
     print(f"1. Campiona 'Verde' (PICCO luce)                 {stato_verde}")
     print(f"2. Campiona 'Rosso' (PICCO luce)                 {stato_rosso}")
     print(f"3. Campiona 'Spento' (MEDIA buio)                {stato_buio}")
@@ -259,11 +265,14 @@ def stampa_menu():
     print(f"7. Abilita/Disabilita Log di Debug                 {stato_debug}")
     # --- MODIFICA V 1.15 ---
     print(f"8. Imposta Buffer Size (Stabilità Monitor)       {stato_buffer}")
-    print("-" * 55)
-    print("9. Salva calibrazione e configurazione su file ed Esci")
-    print("10. Esci SENZA salvare")
-    print("=" * 55)
     # --- FINE MODIFICA V 1.15 ---
+    # --- MODIFICA V 1.16 ---
+    print(f"9. Imposta Soglia Stabilità (es. 95%)            {stato_soglia}")
+    print("-" * 55)
+    print("10. Salva calibrazione e configurazione su file ed Esci")
+    print("11. Esci SENZA salvare")
+    print("=" * 55)
+    # --- FINE MODIFICA V 1.16 ---
 
 
 def salva_file_calibrazione():
@@ -287,6 +296,12 @@ def salva_file_calibrazione():
         dati_calibrazione_temporanei["buffer_size"] = 35
     # --- FINE MODIFICA V 1.15 ---
 
+    # --- MODIFICA V 1.16 ---
+    if "steady_state_threshold" not in dati_calibrazione_temporanei:
+        print("   ℹ️ 'Soglia Stabilità' non impostata, imposto il default: 95%.")
+        dati_calibrazione_temporanei["steady_state_threshold"] = 95
+    # --- FINE MODIFICA V 1.16 ---
+
     mancanti = []
     if "verde" not in dati_calibrazione_temporanei: mancanti.append("Verde")
     if "non_verde" not in dati_calibrazione_temporanei: mancanti.append("Rosso")
@@ -305,6 +320,9 @@ def salva_file_calibrazione():
     # --- MODIFICA V 1.15 ---
     print(f"  Buffer Size:       {dati_calibrazione_temporanei.get('buffer_size', 'N/D')} letture")
     # --- FINE MODIFICA V 1.15 ---
+    # --- MODIFICA V 1.16 ---
+    print(f"  Soglia Stabilità:  {dati_calibrazione_temporanei.get('steady_state_threshold', 'N/D')}%")
+    # --- FINE MODIFICA V 1.16 ---
     print("-" * 36)
 
     conferma = 'n'
@@ -360,11 +378,11 @@ def main():
         stop_live_thread.set()
         live_thread.join(timeout=1.0)
 
-        # --- MODIFICA V 1.15 ---
-        scelta = input("Inserisci la tua scelta (1-10): ")
+        # --- MODIFICA V 1.16 ---
+        scelta = input("Inserisci la tua scelta (1-11): ")
 
         if scelta == '1' or scelta == '2':  # VERDE o ROSSO (PICCO)
-            # --- FINE MODIFICA V 1.15 ---
+            # --- FINE MODIFICA V 1.16 ---
             # --- Logica V 1.12 ---
             if 'buio' not in dati_calibrazione_temporanei:
                 print("\n❌ ERRORE: Devi calibrare 'Spento' (Opzione 3) PRIMA di calibrare Verde o Rosso.")
@@ -490,18 +508,39 @@ def main():
                 print("   ❌ Errore: Inserisci solo un numero (es. 35).")
             time.sleep(1)
 
-        elif scelta == '9':  # Salva
+        # --- MODIFICA V 1.16 ---
+        elif scelta == '9':
+            print("\n--- 9. Imposta Soglia Stabilità (Stato Fisso) ---")
+            current_soglia = dati_calibrazione_temporanei.get('steady_state_threshold', 95)
+            print(f"   Valore Attuale: {current_soglia}%")
+            print(f"   CONSIGLIO: 95 (Molto severo), 90 (Standard).")
+            try:
+                nuova_soglia_str = input(f"   Inserisci nuova soglia % (INVIO per {current_soglia}): ")
+                if nuova_soglia_str:
+                    nuova_soglia = int(nuova_soglia_str)
+                    if nuova_soglia >= 80 and nuova_soglia <= 98:
+                        dati_calibrazione_temporanei["steady_state_threshold"] = nuova_soglia
+                        print(f"✅ Soglia Stabilità impostata su: {nuova_soglia}%")
+                    else:
+                        print("   ❌ Errore: Inserisci un numero tra 80 e 98.")
+                else:
+                    print("   Nessuna modifica.")
+            except ValueError:
+                print("   ❌ Errore: Inserisci solo un numero (es. 95).")
+            time.sleep(1)
+
+        elif scelta == '10':  # Salva
             if salva_file_calibrazione():
                 break  # Esce dal loop
 
-        elif scelta == '10':  # Esci
+        elif scelta == '11':  # Esci
             print("\nUscita senza salvataggio.")
             break  # Esce dal loop
 
         else:
-            print(f"Scelta non valida. Inserisci un numero da 1 a 10.")
+            print(f"Scelta non valida. Inserisci un numero da 1 a 11.")
             time.sleep(1)
-        # --- FINE MODIFICA V 1.15 ---
+        # --- FINE MODIFICA V 1.16 ---
 
     print("Programma di calibrazione terminato.")
 

@@ -3,22 +3,17 @@
 # File: monitor_semaforo_TCS.py
 # Directory: [root]
 # Ultima Modifica: 2025-11-14
-# Versione: 1.18
+# Versione: 1.19
 # ---
 
 """
 MONITOR SEMAFORO - Versione TCS34725 (4 Stati)
 
-V 1.18:
-- INVERSIONE LOGICA (come da richiesta utente).
-- Riscritto 'analyze_state_buffer'.
-- Aggiunta STEADY_STATE_THRESHOLD = 0.90 (90%).
-- VERDE e SPENTO ora richiedono il 90% del buffer
-  per essere considerati 'fissi'.
-- ATTESA è definito come un mix di VERDE e SPENTO
-  che non raggiunge le soglie 'fisse'.
-- Rimosse costanti 'BLINK_THRESHOLD_PERCENT' e
-  'MIN_TRANSITIONS_FOR_BLINK' (non più necessarie).
+V 1.19:
+- STEADY_STATE_THRESHOLD non è più hardcoded (era 0.90).
+- Ora carica 'steady_state_threshold' da 'calibrazione.json'.
+- Se non lo trova, usa 0.95 (95%) come nuovo default
+  per rendere il rilevamento 'VERDE fisso' più severo.
 """
 
 import time
@@ -42,9 +37,7 @@ except ImportError:
 CAMPIONI_PER_LETTURA = 1
 LOOP_SLEEP_TIME = 0.1
 STATE_PERSISTENCE_SECONDS = 0.5
-# --- MODIFICA V 1.18: Nuova logica di soglia ---
-STEADY_STATE_THRESHOLD = 0.90  # (90%)
-# --- FINE MODIFICA V 1.18 ---
+# --- MODIFICA V 1.19: STEADY_STATE_THRESHOLD rimosso da qui ---
 
 # --- CONFIGURAZIONE DEBUG LOGGING (V 1.06) ---
 MAX_DEBUG_LINES = 5000
@@ -72,9 +65,13 @@ current_log_file_path = None
 current_log_line_count = 0
 CSV_HEADER = "Timestamp,R,G,B,StatoIstantaneo,StatoComposito\n"
 DEBUG_LOGGING_ENABLED = False
-
-
 # ----------------------------------------
+
+# --- MODIFICA V 1.19: Variabile globale per la soglia ---
+STEADY_STATE_THRESHOLD = 0.95  # Default, verrà sovrascritto
+
+
+# --- FINE MODIFICA V 1.19 ---
 
 # --- Inizializzazione Hardware ---
 
@@ -106,7 +103,7 @@ def inizializza_sensore(integration_time, gain):
 
 def carica_calibrazione():
     """Carica i dati di calibrazione dal file JSON."""
-    global DEBUG_LOGGING_ENABLED
+    global DEBUG_LOGGING_ENABLED, STEADY_STATE_THRESHOLD
 
     if not os.path.exists(CALIBRATION_FILE):
         print(f"❌ ERRORE: File di calibrazione non trovato!")
@@ -127,6 +124,15 @@ def carica_calibrazione():
             print("ℹ️  Logging di Debug Avanzato ATTIVO (scrive su /LOG)")
         else:
             print("ℹ️  Logging di Debug Avanzato DISATTIVATO.")
+
+        # --- MODIFICA V 1.19: Carica STEADY_STATE_THRESHOLD ---
+        # Carica il valore (es. 95) e lo converte in float (0.95)
+        soglia_percent = data.get('steady_state_threshold', 95)  # Default 95%
+        STEADY_STATE_THRESHOLD = soglia_percent / 100.0
+        if soglia_percent == 95 and 'steady_state_threshold' not in data:
+            print(f"⚠️  'steady_state_threshold' non trovato in config, uso default: 95%")
+        print(f"ℹ️  Soglia di stabilità impostata a: {soglia_percent}%")
+        # --- FINE MODIFICA V 1.19 ---
 
         print(f"✅ Dati di calibrazione caricati da '{CALIBRATION_FILE}'")
         return data
