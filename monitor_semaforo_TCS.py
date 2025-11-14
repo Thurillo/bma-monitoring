@@ -3,17 +3,17 @@
 # File: monitor_semaforo_TCS.py
 # Directory: [root]
 # Ultima Modifica: 2025-11-14
-# Versione: 1.14
+# Versione: 1.15
 # ---
 
 """
 MONITOR SEMAFORO - Versione TCS34725 (4 Stati)
 
-V 1.14:
-- FIX: Corretto NameError per 'CALIBRATION_FILE'.
-- Ripristinate le definizioni delle costanti di percorso
-  (CONFIG_DIR, CALIBRATION_FILE) che erano
-  state accidentalmente rimosse nella V 1.13.
+V 1.15:
+- FIX: Corretto NameError per 'MQTT_USERNAME' e 'MQTT_PASSWORD'.
+- Ripristinate le definizioni delle costanti MQTT
+  (USERNAME, PASSWORD) che erano
+  state accidentalmente rimosse nella V 1.14.
 """
 
 import time
@@ -30,7 +30,7 @@ try:
     import adafruit_tcs34725
 except ImportError:
     print("❌ Errore: Librerie richieste non trovate.")
-    # ... (codice import esistente) ...
+    print("   Assicurati di averle installate da 'requirements.txt'")
     sys.exit(1)
 
 # --- CONFIGURAZIONE LOGICA DI RILEVAMENTO ---
@@ -47,13 +47,15 @@ MIN_TRANSITIONS_FOR_BLINK = 4  # Ridotto da 6
 
 # --- CONFIGURAZIONE DEBUG LOGGING (V 1.06) ---
 MAX_DEBUG_LINES = 5000
-# ... (codice config esistente) ...
 # --- FINE CONFIGURAZIONE ---
 
 # --- CONFIGURAZIONE MQTT (e Percorsi) ---
 MQTT_BROKER = "192.168.20.163"
 MQTT_PORT = 1883
-# ... (codice config esistente) ...
+# --- MODIFICA V 1.15: Ripristino Costanti ---
+MQTT_USERNAME = "shima"
+MQTT_PASSWORD = "shima"
+# --- FINE MODIFICA V 1.15 ---
 MQTT_TRIGGER_TOPIC = "bma/cambiostato"
 # ----------------------------------------------
 # --- MODIFICA V 1.14: Ripristino Costanti ---
@@ -65,7 +67,9 @@ LOG_DIR = os.path.join(SCRIPT_DIR, "LOG")
 # ----------------------------------------
 
 is_mqtt_connected = False
-# ... (codice variabili globali esistente) ...
+current_log_file_path = None
+current_log_line_count = 0
+CSV_HEADER = "Timestamp,R,G,B,StatoIstantaneo,StatoComposito\n"
 DEBUG_LOGGING_ENABLED = False
 
 
@@ -76,27 +80,22 @@ DEBUG_LOGGING_ENABLED = False
 # --- MODIFICA V 1.10: Correzione GAIN ---
 def inizializza_sensore(integration_time, gain):
     """Inizializza il sensore TCS34725."""
-    # ... (codice funzione esistente) ...
     print("🔧 Inizializzazione sensore TCS34725...")
     try:
         i2c = busio.I2C(board.SCL, board.SDA)
         sensor = adafruit_tcs34725.TCS34725(i2c)
-        # ... (codice funzione esistente) ...
         sensor.integration_time = integration_time
 
         if gain in [1, 4, 16, 60]:
             sensor.gain = gain
-        # ... (codice funzione esistente) ...
         else:
             print(f"   ⚠️ Gain {gain} non valido, imposto 4x.")
             sensor.gain = 4
             gain = 4  # Aggiorna la variabile per il log
-        # ... (codice funzione esistente) ...
 
         print(f"✅ Sensore inizializzato (Time: {integration_time}ms, Gain: {gain}x).")
         return sensor
     except Exception as e:
-        # ... (codice funzione esistente) ...
         print(f"❌ ERRORE: Impossibile trovare il sensore TCS34725.")
         print(f"   Dettagli: {e}")
         return None
@@ -105,40 +104,32 @@ def inizializza_sensore(integration_time, gain):
 # --- FINE MODIFICA V 1.10 ---
 
 def carica_calibrazione():
-    # ... (codice funzione esistente) ...
     """Carica i dati di calibrazione dal file JSON."""
     global DEBUG_LOGGING_ENABLED
 
     if not os.path.exists(CALIBRATION_FILE):
-        # ... (codice funzione esistente) ...
         print(f"❌ ERRORE: File di calibrazione non trovato!")
         print(f"   Esegui prima 'utils/calibra_sensore.py'")
         print(f"   Percorso cercato: {CALIBRATION_FILE}")
-        # ... (codice funzione esistente) ...
         return None
 
     try:
         with open(CALIBRATION_FILE, 'r') as f:
-            # ... (codice funzione esistente) ...
             data = json.load(f)
         if "verde" not in data or "non_verde" not in data or "buio" not in data:
             print("❌ ERRORE: File di calibrazione incompleto (mancano i colori).")
-            # ... (codice funzione esistente) ...
             print("   Esegui 'utils/calibra_sensore.py' per ricalibrare.")
             return None
 
         DEBUG_LOGGING_ENABLED = data.get('debug_logging', False)
-        # ... (codice funzione esistente) ...
         if DEBUG_LOGGING_ENABLED:
             print("ℹ️  Logging di Debug Avanzato ATTIVO (scrive su /LOG)")
         else:
             print("ℹ️  Logging di Debug Avanzato DISATTIVATO.")
-        # ... (codice funzione esistente) ...
 
         print(f"✅ Dati di calibrazione caricati da '{CALIBRATION_FILE}'")
         return data
     except Exception as e:
-        # ... (codice funzione esistente) ...
         print(f"❌ ERRORE durante la lettura del file JSON: {e}")
         return None
 
@@ -146,152 +137,124 @@ def carica_calibrazione():
 # --- Funzioni di Lettura e Analisi ---
 
 def leggi_rgb_attuale(sens):
-    # ... (codice funzione esistente) ...
     """Esegue una singola lettura RGB, con fallback."""
     try:
         result = sens.color_rgb_bytes
         if len(result) >= 3: return result[:3]
-    # ... (codice funzione esistente) ...
     except Exception:
         pass
     try:
-        # ... (codice funzione esistente) ...
         raw = sens.color_raw
         return min(255, int(raw[0] / 256)), min(255, int(raw[1] / 256)), min(255, int(raw[2] / 256))
     except Exception:
         return 0, 0, 0
-    # ... (codice funzione esistente) ...
 
 
 def leggi_rgb_stabilizzato(sensor, campioni=CAMPIONI_PER_LETTURA):
     """Legge il sensore 'campioni' volte e restituisce i valori medi R, G, B."""
-    # ... (codice funzione esistente) ...
     tot_r, tot_g, tot_b, letture_valide = 0, 0, 0, 0
     for _ in range(campioni):
         try:
-            # ... (codice funzione esistente) ...
             r, g, b = leggi_rgb_attuale(sensor)
             letture_valide += 1;
             tot_r += r;
             tot_g += g;
             tot_b += b
         except Exception:
-            # ... (codice funzione esistente) ...
             pass
         time.sleep(0.01)
 
     if letture_valide == 0: return {"R": 0, "G": 0, "B": 0}
-    # ... (codice funzione esistente) ...
     return {"R": int(tot_r / letture_valide), "G": int(tot_g / letture_valide), "B": int(tot_b / letture_valide)}
 
 
 def calcola_distanza_rgb(rgb1, rgb2):
     """Calcola la distanza Euclidea tra due colori RGB."""
-    # ... (codice funzione esistente) ...
     r1, g1, b1 = rgb1['R'], rgb1['G'], rgb1['B']
     r2, g2, b2 = rgb2['R'], rgb2['G'], rgb2['B']
     return ((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2) ** 0.5
 
 
 def get_instant_status(sensor, calib_data):
-    # ... (codice funzione esistente) ...
     """Determina lo stato istantaneo (ROSSO, VERDE, SPENTO)."""
     rgb_medio = leggi_rgb_stabilizzato(sensor)
 
     if not rgb_medio: return "SPENTO", {"R": 0, "G": 0, "B": 0}
 
-    # ... (codice funzione esistente) ...
     dist_verde = calcola_distanza_rgb(rgb_medio, calib_data['verde'])
     dist_rosso = calcola_distanza_rgb(rgb_medio, calib_data['non_verde'])
     dist_buio = calcola_distanza_rgb(rgb_medio, calib_data['buio'])
 
     distanze = {
-        # ... (codice funzione esistente) ...
         "VERDE": dist_verde,
         "ROSSO": dist_rosso,
         "SPENTO": dist_buio
     }
-    # ... (codice funzione esistente) ...
 
     stato_piu_vicino = min(distanze, key=distanze.get)
     return stato_piu_vicino, rgb_medio
 
 
 def analyze_state_buffer(buffer):
-    # ... (codice funzione esistente) ...
     """Analizza il buffer per determinare lo stato composito."""
     rosso_count = buffer.count("ROSSO")
     verde_count = buffer.count("VERDE")
     spento_count = buffer.count("SPENTO")
 
     # REGOLA 1: ROSSO ha priorità
-    # ... (codice funzione esistente) ...
     if rosso_count > 0:
         return "ROSSO"
 
     # REGOLA 2: VERDE (fisso o lampeggiante)
-    # ... (codice funzione esistente) ...
     if verde_count > 0:
         percent_spento = spento_count / len(buffer)
 
         if percent_spento >= BLINK_THRESHOLD_PERCENT:
-            # ... (codice funzione esistente) ...
             transitions = 0
             for i in range(len(buffer) - 1):
                 if (buffer[i] == "VERDE" and buffer[i + 1] == "SPENTO") or \
                         (buffer[i] == "SPENTO" and buffer[i + 1] == "VERDE"):
-                    # ... (codice funzione esistente) ...
                     transitions += 1
 
             if transitions >= MIN_TRANSITIONS_FOR_BLINK:
                 return "ATTESA"
-            # ... (codice funzione esistente) ...
             else:
                 if verde_count > spento_count:
                     return "VERDE"
                 else:
-                    # ... (codice funzione esistente) ...
                     return "SPENTO"
         else:
             return "VERDE"
 
     # REGOLA 3: SPENTO
-    # ... (codice funzione esistente) ...
     return "SPENTO"
 
 
 # --- FUNZIONE LOGGING V 1.06 (STRATEGIA 1): ROTAZIONE FILE ---
 def write_debug_log(timestamp_str, rgb, instant_state, composite_state):
-    # ... (codice funzione esistente) ...
     """Scrive sul file di debug CSV, gestendo la rotazione del file."""
     global current_log_file_path, current_log_line_count, DEBUG_LOGGING_ENABLED
 
     if not DEBUG_LOGGING_ENABLED:
-        # ... (codice funzione esistente) ...
         return
 
     try:
         if current_log_file_path is None or current_log_line_count >= MAX_DEBUG_LINES:
-            # ... (codice funzione esistente) ...
             now_filename = datetime.now().strftime('%Y-%m-%d_%H%M%S')
             new_filename = f"debug_log_{now_filename}.csv"
             current_log_file_path = os.path.join(LOG_DIR, new_filename)
-            # ... (codice funzione esistente) ...
 
             with open(current_log_file_path, 'w') as f:
                 f.write(CSV_HEADER)
             current_log_line_count = 1
-        # ... (codice funzione esistente) ...
 
         line = f"{timestamp_str},{rgb['R']},{rgb['G']},{rgb['B']},{instant_state},{composite_state}\n"
 
         with open(current_log_file_path, 'a') as f:
-            # ... (codice funzione esistente) ...
             f.write(line)
         current_log_line_count += 1
 
     except Exception as e:
-        # ... (codice funzione esistente) ...
         print(f"   ⚠️ Errore scrittura debug log: {e}")
 
 
@@ -300,27 +263,21 @@ def write_debug_log(timestamp_str, rgb, instant_state, composite_state):
 
 # --- Funzioni MQTT ---
 def on_connect(client, userdata, flags, rc, properties):
-    # ... (codice funzione esistente) ...
     """Callback per quando ci si connette al broker."""
     global is_mqtt_connected
     if rc == 0:
         print(f"✅ Connesso al broker MQTT! (Flags: {flags}, RC: {rc})")
-        # ... (codice funzione esistente) ...
         is_mqtt_connected = True
     else:
         print(f"❌ Connessione MQTT fallita, codice: {rc}.")
         is_mqtt_connected = False
 
 
-# ... (codice funzione esistente) ...
-
 def on_disconnect(client, userdata, flags, reason_code, properties):
     """Callback per quando ci si disconnette."""
-    # ... (codice funzione esistente) ...
     global is_mqtt_connected
     is_mqtt_connected = False
     print(f"⚠️ Disconnesso dal broker MQTT. Reason code: {reason_code}")
-    # ... (codice funzione esistente) ...
     if reason_code != 0:
         print("   Tentativo di riconnessione automatica gestito da Paho-MQTT...")
 
@@ -328,47 +285,38 @@ def on_disconnect(client, userdata, flags, reason_code, properties):
 # --- Ciclo Principale ---
 
 def main():
-    # ... (codice funzione esistente) ...
     global is_mqtt_connected, DEBUG_LOGGING_ENABLED
 
     calibrated_data = carica_calibrazione()
     if not calibrated_data:
-        # ... (codice funzione esistente) ...
         print("Impossibile avviare. File di calibrazione mancante o corrotto.")
         return
 
     if DEBUG_LOGGING_ENABLED:
-        # ... (codice funzione esistente) ...
         try:
             os.makedirs(LOG_DIR, exist_ok=True)
         except Exception as e:
             print(f"❌ ERRORE: Impossibile creare la directory LOG: {e}")
-            # ... (codice funzione esistente) ...
             print("   Il debug logging CSV sarà disabilitato.")
             DEBUG_LOGGING_ENABLED = False
 
     integration_time = calibrated_data.get('integration_time', 250)
-    # ... (codice funzione esistente) ...
     gain = calibrated_data.get('gain', 4)
 
     if integration_time == 250 and 'integration_time' not in calibrated_data:
         print("⚠️  'integration_time' non trovato in config, uso default: 250ms")
-    # ... (codice funzione esistente) ...
     if gain == 4 and 'gain' not in calibrated_data:
         print("⚠️  'gain' non trovato in config, uso default: 4x")
 
     sensor = inizializza_sensore(integration_time, gain)
-    # ... (codice funzione esistente) ...
     if not sensor:
         print("Impossibile avviare. Controlla hardware.")
         return
 
     if "machine_id" not in calibrated_data or not calibrated_data["machine_id"]:
-        # ... (codice funzione esistente) ...
         print(f"❌ ERRORE: 'machine_id' non trovato o non impostato in '{CALIBRATION_FILE}'.")
         print(f"   Esegui 'utils/calibra_sensore.py' e imposta un ID Macchina (Opzione 4).")
         return
-    # ... (codice funzione esistente) ...
 
     MACHINE_ID = calibrated_data.get("machine_id")
     MQTT_TOPIC_STATUS = f"bma/{MACHINE_ID}/semaforo/stato"
@@ -388,94 +336,78 @@ def main():
     print("\n✅ Inizializzazione completata.")
 
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=MACHINE_ID)
-    # ... (codice funzione esistente) ...
     client.on_connect, client.on_disconnect = on_connect, on_disconnect
+    # --- MODIFICA V 1.15: Ripristino Costanti ---
     client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
+    # --- FINE MODIFICA V 1.15 ---
     client.reconnect_delay_set(min_delay=1, max_delay=30)
-    # ... (codice funzione esistente) ...
 
     try:
         client.connect(MQTT_BROKER, MQTT_PORT, 60)
     except Exception as e:
-        # ... (codice funzione esistente) ...
         print(f"❌ Errore di connessione MQTT iniziale: {e}")
 
     stato_pubblicato = None
     last_published_change_time = 0
-    # ... (codice funzione esistente) ...
 
     prev_composite_state = None
 
     print("Monitoraggio attivo.")
 
-    # ... (codice funzione esistente) ...
     try:
         while True:
             stato_corrente, rgb_corrente = get_instant_status(sensor, calibrated_data)
             visual_state_buffer.append(stato_corrente)
-            # ... (codice funzione esistente) ...
 
             stato_composito = analyze_state_buffer(visual_state_buffer)
 
             stato_da_pubblicare = None
-            # ... (codice funzione esistente) ...
             if stato_composito != "SPENTO":
                 stato_da_pubblicare = stato_composito
                 if stato_composito != stato_pubblicato:
                     last_published_change_time = time.time()
-            # ... (codice funzione esistente) ...
             else:
                 if time.time() - last_published_change_time > STATE_PERSISTENCE_SECONDS:
                     stato_da_pubblicare = "SPENTO"
                 else:
-                    # ... (codice funzione esistente) ...
                     stato_da_pubblicare = stato_pubblicato
 
             if stato_composito != prev_composite_state:
                 now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-                # ... (codice funzione esistente) ...
                 write_debug_log(now_str, rgb_corrente, stato_corrente, stato_composito)
                 prev_composite_state = stato_composito
 
             if stato_da_pubblicare != stato_pubblicato:
-                # ... (codice funzione esistente) ...
                 stato_pubblicato = stato_da_pubblicare
                 last_published_change_time = time.time()
 
                 timestamp = time.time()
-                # ... (codice funzione esistente) ...
                 datetime_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(timestamp))
 
                 payload_data = {
                     "stato": stato_pubblicato, "machine_id": MACHINE_ID,
-                    # ... (codice funzione esistente) ...
                     "timestamp": timestamp, "datetime_str": datetime_str
                 }
                 payload = json.dumps({"message": payload_data})
 
                 if is_mqtt_connected:
-                    # ... (codice funzione esistente) ...
                     try:
                         client.publish(MQTT_TOPIC_STATUS, payload, qos=1, retain=True)
                         client.publish(MQTT_TRIGGER_TOPIC, payload, qos=1, retain=True)
                         print(
                             f"[{datetime_str}] Stato Pubblicato: {stato_pubblicato}. Invio trigger a '{MQTT_TRIGGER_TOPIC}'...")
-                    # ... (codice funzione esistente) ...
                     except Exception as e:
                         print(f"   ⚠️ Errore during la pubblicazione MQTT: {e}. In attesa di riconnessione...")
                 else:
                     print(f"[{datetime_str}] Rilevato cambio: {stato_pubblicato}. MQTT OFFLINE. Messaggio non inviato.")
-            # ... (codice funzione esistente) ...
 
             client.loop(timeout=LOOP_SLEEP_TIME)
 
     except KeyboardInterrupt:
-        # ... (codice funzione esistente) ...
         print("\n🛑 Chiusura del programma...")
     finally:
         print("🧹 Rilascio risorse...")
         client.disconnect()
-        # ... (codice funzione esistente) ...
         print("✅ Programma terminato.")
 
 
