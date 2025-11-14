@@ -3,15 +3,16 @@
 # File: monitor_semaforo_TCS.py
 # Directory: [root]
 # Ultima Modifica: 2025-11-14
-# Versione: 1.06
+# Versione: 1.08
 # ---
 
 """
 MONITOR SEMAFORO - Versione TCS34725 (4 Stati)
 
-V 1.06:
-- Modificata logica di debug: ora salva in 'LOG/'
-- Implementata rotazione dei file di log ogni 5000 righe.
+V 1.08:
+- Riportati i parametri di ATTESA (Blink) a valori più severi (0.35 / 6)
+  su richiesta dell'utente, per massimizzare la stabilità
+  contro i falsi positivi (flicker).
 """
 
 import time
@@ -37,13 +38,13 @@ BUFFER_SIZE = 30
 LOOP_SLEEP_TIME = 0.1
 STATE_PERSISTENCE_SECONDS = 0.5
 
-# --- MODIFICHE V 1.05 (STRATEGIA 3): Parametri resi MOLTO severi ---
+# --- MODIFICHE V 1.08: Parametri riportati a V 1.06 (severi) ---
 BLINK_THRESHOLD_PERCENT = 0.35  # (35%) - Aumentato da 0.25
 MIN_TRANSITIONS_FOR_BLINK = 6  # Aumentato da 4
-# --- FINE MODIFICHE V 1.05 ---
+# --- FINE MODIFICHE V 1.08 ---
 
-# --- NUOVA CONFIGURAZIONE V 1.06 (STRATEGIA 1): DEBUG LOGGING ---
-DEBUG_LOGGING = True  # Attiva/Disattiva il log CSV
+# --- CONFIGURAZIONE DEBUG LOGGING (V 1.06) ---
+# DEBUG_LOGGING è ora controllato dal file di calibrazione
 MAX_DEBUG_LINES = 5000  # Limite righe per il file di debug
 # --- FINE CONFIGURAZIONE ---
 
@@ -70,6 +71,7 @@ is_mqtt_connected = False
 current_log_file_path = None
 current_log_line_count = 0
 CSV_HEADER = "Timestamp,R,G,B,StatoIstantaneo,StatoComposito\n"
+DEBUG_LOGGING_ENABLED = False  # Controllato da config
 
 
 # --- FINE V 1.06 ---
@@ -94,6 +96,8 @@ def inizializza_sensore(integration_time):
 
 def carica_calibrazione():
     """Carica i dati di calibrazione dal file JSON."""
+    global DEBUG_LOGGING_ENABLED  # V 1.07: Imposta flag globale
+
     if not os.path.exists(CALIBRATION_FILE):
         print(f"❌ ERRORE: File di calibrazione non trovato!")
         print(f"   Esegui prima 'utils/calibra_sensore.py'")
@@ -107,6 +111,13 @@ def carica_calibrazione():
             print("❌ ERRORE: File di calibrazione incompleto (mancano i colori).")
             print("   Esegui 'utils/calibra_sensore.py' per ricalibrare.")
             return None
+
+        # V 1.07: Carica l'impostazione di debug dal file
+        DEBUG_LOGGING_ENABLED = data.get('debug_logging', False)
+        if DEBUG_LOGGING_ENABLED:
+            print("ℹ️  Logging di Debug Avanzato ATTIVO (scrive su /LOG)")
+        else:
+            print("ℹ️  Logging di Debug Avanzato DISATTIVATO.")
 
         print(f"✅ Dati di calibrazione caricati da '{CALIBRATION_FILE}'")
         return data
@@ -190,7 +201,7 @@ def analyze_state_buffer(buffer):
     if verde_count > 0:
         percent_spento = spento_count / len(buffer)
 
-        # Candidato al lampeggio? (V1.05: ora 35%)
+        # Candidato al lampeggio? (V1.08: ora 35%)
         if percent_spento >= BLINK_THRESHOLD_PERCENT:
             transitions = 0
             for i in range(len(buffer) - 1):
@@ -198,7 +209,7 @@ def analyze_state_buffer(buffer):
                         (buffer[i] == "SPENTO" and buffer[i + 1] == "VERDE"):
                     transitions += 1
 
-            # VERO lampeggio? (V1.05: ora 6 transizioni)
+            # VERO lampeggio? (V1.08: ora 6 transizioni)
             if transitions >= MIN_TRANSITIONS_FOR_BLINK:
                 return "ATTESA"
             else:
@@ -218,35 +229,26 @@ def analyze_state_buffer(buffer):
 # --- FUNZIONE LOGGING V 1.06 (STRATEGIA 1): ROTAZIONE FILE ---
 def write_debug_log(timestamp_str, rgb, instant_state, composite_state):
     """Scrive sul file di debug CSV, gestendo la rotazione del file."""
-    global current_log_file_path, current_log_line_count
+    global current_log_file_path, current_log_line_count, DEBUG_LOGGING_ENABLED
 
-    if not DEBUG_LOGGING:
+    if not DEBUG_LOGGING_ENABLED:  # V 1.07: Controlla flag
         return
 
     try:
         # Controlla se dobbiamo creare un nuovo file
-        # (o se è la prima scrittura, o se il file è pieno)
         if current_log_file_path is None or current_log_line_count >= MAX_DEBUG_LINES:
-            # 1. Genera nuovo nome file
             now_filename = datetime.now().strftime('%Y-%m-%d_%H%M%S')
             new_filename = f"debug_log_{now_filename}.csv"
             current_log_file_path = os.path.join(LOG_DIR, new_filename)
 
-            # 2. Scrive l'header
-            with open(current_log_file_path, 'w') as f:  # 'w' to create/overwrite
+            with open(current_log_file_path, 'w') as f:
                 f.write(CSV_HEADER)
-
-            # 3. Resetta il contatore (header è linea 1)
             current_log_line_count = 1
 
-            # 4. Formatta la linea
         line = f"{timestamp_str},{rgb['R']},{rgb['G']},{rgb['B']},{instant_state},{composite_state}\n"
 
-        # 5. Aggiunge la linea al file corrente (append)
         with open(current_log_file_path, 'a') as f:
             f.write(line)
-
-        # 6. Incrementa il contatore
         current_log_line_count += 1
 
     except Exception as e:
@@ -281,7 +283,7 @@ def on_disconnect(client, userdata, flags, reason_code, properties):
 # --- Ciclo Principale ---
 
 def main():
-    global is_mqtt_connected
+    global is_mqtt_connected, DEBUG_LOGGING_ENABLED  # V 1.07
 
     calibrated_data = carica_calibrazione()
     if not calibrated_data:
@@ -289,13 +291,13 @@ def main():
         return
 
     # --- V 1.06: Crea la cartella LOG se non esiste ---
-    global DEBUG_LOGGING  # Riferimento per poterla disabilitare in caso di errore
-    try:
-        os.makedirs(LOG_DIR, exist_ok=True)
-    except Exception as e:
-        print(f"❌ ERRORE: Impossibile creare la directory LOG: {e}")
-        print("   Il debug logging CSV sarà disabilitato.")
-        DEBUG_LOGGING = False
+    if DEBUG_LOGGING_ENABLED:  # V 1.07: Controlla se il logging è abilitato
+        try:
+            os.makedirs(LOG_DIR, exist_ok=True)
+        except Exception as e:
+            print(f"❌ ERRORE: Impossibile creare la directory LOG: {e}")
+            print("   Il debug logging CSV sarà disabilitato.")
+            DEBUG_LOGGING_ENABLED = False
     # --- FINE V 1.06 ---
 
     integration_time = calibrated_data.get('integration_time', 250)
@@ -362,13 +364,12 @@ def main():
                 else:
                     stato_da_pubblicare = stato_pubblicato
 
-                    # --- DEBUG LOGGING (STRATEGIA 1) V 1.06 ---
-            # Registra solo se lo stato composito cambia (per debug oscillazioni)
+                    # --- DEBUG LOGGING (STRATEGIA 1) V 1.07 ---
             if stato_composito != prev_composite_state:
                 now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
                 write_debug_log(now_str, rgb_corrente, stato_corrente, stato_composito)
-                prev_composite_state = stato_composito  # Aggiorna lo stato precedente
-            # --- FINE DEBUG LOGGING ---
+                prev_composite_state = stato_composito
+                # --- FINE DEBUG LOGGING ---
 
             if stato_da_pubblicare != stato_pubblicato:
                 stato_pubblicato = stato_da_pubblicare
@@ -390,7 +391,7 @@ def main():
                         print(
                             f"[{datetime_str}] Stato Pubblicato: {stato_pubblicato}. Invio trigger a '{MQTT_TRIGGER_TOPIC}'...")
                     except Exception as e:
-                        print(f"   ⚠️ Errore durante la pubblicazione MQTT: {e}. In attesa di riconnessione...")
+                        print(f"   ⚠️ Errore during la pubblicazione MQTT: {e}. In attesa di riconnessione...")
                 else:
                     print(f"[{datetime_str}] Rilevato cambio: {stato_pubblicato}. MQTT OFFLINE. Messaggio non inviato.")
 
