@@ -3,19 +3,22 @@
 # File: calibra_sensore.py
 # Directory: utils/
 # Ultima Modifica: 2025-11-14
-# Versione: 1.05
+# Versione: 1.09
 # ---
 
 """
 SCRIPT: CALIBRAZIONE MANUALE (Ambiente Reale)
 
-V 1.05:
-- Corretto import mancante (adafruit_tcs34725)
+V 1.09:
+- Aggiunta Opzione 6 per configurare il GAIN (sensibilità)
+  del sensore (1, 4, 16, 60).
+- Default GAIN impostato a 4x per ridurre il rumore di fondo.
+- Salva e Esci ora sono 8 e 9.
 """
 
 import board
 import busio
-import adafruit_tcs34725  # <-- AGGIUNTO IMPORT MANCANTE
+import adafruit_tcs34725
 import time
 import json
 import sys
@@ -27,6 +30,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_DIR = os.path.join(SCRIPT_DIR, "..", "config")
 FILE_CALIBRAZIONE = os.path.join(CONFIG_DIR, "calibrazione.json")
 CAMPIONI_PER_LETTURA = 10
+VALID_GAINS = [1, 4, 16, 60]
 
 dati_calibrazione_temporanei = {}
 stop_live_thread = threading.Event()
@@ -36,13 +40,30 @@ stop_live_thread = threading.Event()
 def inizializza_sensore():
     print("🔧 Inizializzazione sensore TCS34725...")
     integration_time = dati_calibrazione_temporanei.get('integration_time', 250)
+    # --- MODIFICA V 1.09: Usa 4 come default per il gain ---
+    gain = dati_calibrazione_temporanei.get('gain', 4)
 
     try:
         i2c = busio.I2C(board.SCL, board.SDA)
         sensor = adafruit_tcs34725.TCS34725(i2c)
         sensor.integration_time = integration_time
-        sensor.gain = 16
-        print(f"✅ Sensore inizializzato (Time: {integration_time}ms, Gain: 16x).")
+
+        # Mappa il valore numerico del gain all'impostazione della libreria
+        if gain == 1:
+            sensor.gain = adafruit_tcs34725.GAIN_1X
+        elif gain == 4:
+            sensor.gain = adafruit_tcs34725.GAIN_4X
+        elif gain == 16:
+            sensor.gain = adafruit_tcs34725.GAIN_16X
+        elif gain == 60:
+            sensor.gain = adafruit_tcs34725.GAIN_60X
+        else:
+            print(f"   ⚠️ Gain {gain} non valido, imposto 4x.")
+            sensor.gain = adafruit_tcs34725.GAIN_4X
+            dati_calibrazione_temporanei['gain'] = 4  # Corregge il config
+            gain = 4
+
+        print(f"✅ Sensore inizializzato (Time: {integration_time}ms, Gain: {gain}x).")
         return sensor
     except Exception as e:
         print(f"❌ ERRORE: Impossibile trovare il sensore TCS34725.")
@@ -149,10 +170,13 @@ def stampa_menu():
     integration_time = dati_calibrazione_temporanei.get('integration_time', 250)
     stato_integrazione = f"✅ IMPOSTATO ({integration_time}ms)"
 
-    # --- MODIFICA V 1.04: Stato Debug Logging ---
+    # --- MODIFICA V 1.09: Stato Gain ---
+    gain = dati_calibrazione_temporanei.get('gain', 4)  # Default 4
+    stato_gain = f"✅ IMPOSTATO ({gain}x)"
+    # --- FINE MODIFICA ---
+
     debug_logging = dati_calibrazione_temporanei.get('debug_logging', False)
     stato_debug = "✅ ABILITATO" if debug_logging else "❌ DISABILITATO"
-    # --- FINE MODIFICA ---
 
     print(f"1. Campiona 'Verde' (luce fissa o lampeggiante)  {stato_verde}")
     print(f"2. Campiona 'Rosso' (luce fissa o lampeggiante)  {stato_rosso}")
@@ -160,11 +184,13 @@ def stampa_menu():
     print("-" * 55)
     print(f"4. Imposta ID Macchina (per MQTT)                  {stato_id}")
     print(f"5. Imposta Tempo Integrazione (Sensore)          {stato_integrazione}")
-    # --- MODIFICA V 1.04: Nuova Opzione 6 ---
-    print(f"6. Abilita/Disabilita Log di Debug                 {stato_debug}")
+    # --- MODIFICA V 1.09: Nuova Opzione 6 (Gain) ---
+    print(f"6. Imposta Gain Sensore (Sensibilità)            {stato_gain}")
+    print(f"7. Abilita/Disabilita Log di Debug                 {stato_debug}")
     print("-" * 55)
-    print("7. Salva calibrazione e configurazione su file ed Esci")
-    print("8. Esci SENZA salvare")
+    # --- MODIFICA V 1.09: Opzioni 8 e 9 ---
+    print("8. Salva calibrazione e configurazione su file ed Esci")
+    print("9. Esci SENZA salvare")
     print("=" * 55)
 
 
@@ -176,10 +202,14 @@ def salva_file_calibrazione():
         print("   ℹ️ 'Tempo Integrazione' non impostato, imposto il default: 250ms.")
         dati_calibrazione_temporanei["integration_time"] = 250
 
-    # --- MODIFICA V 1.04: Imposta default Debug ---
-    if "debug_logging" not in dati_calibrazione_temporanei:
-        dati_calibrazione_temporanei["debug_logging"] = False  # Default è disabilitato
+    # --- MODIFICA V 1.09: Imposta default Gain ---
+    if "gain" not in dati_calibrazione_temporanei:
+        print("   ℹ️ 'Gain' non impostato, imposto il default: 4x.")
+        dati_calibrazione_temporanei["gain"] = 4
     # --- FINE MODIFICA ---
+
+    if "debug_logging" not in dati_calibrazione_temporanei:
+        dati_calibrazione_temporanei["debug_logging"] = False
 
     mancanti = []
     if "verde" not in dati_calibrazione_temporanei: mancanti.append("Verde")
@@ -193,6 +223,8 @@ def salva_file_calibrazione():
     print(f"  Spento (buio):     {format_rgb(dati_calibrazione_temporanei.get('buio'))}")
     print(f"  ID Macchina:       {dati_calibrazione_temporanei.get('machine_id', 'N/D')}")
     print(f"  Tempo Integrazione: {dati_calibrazione_temporanei.get('integration_time', 'N/D')}ms")
+    # --- MODIFICA V 1.09: Stampa Gain ---
+    print(f"  Gain Sensore:      {dati_calibrazione_temporanei.get('gain', 'N/D')}x")
     print(
         f"  Log di Debug:      {'Abilitato' if dati_calibrazione_temporanei.get('debug_logging') else 'Disabilitato'}")
     print("-" * 36)
@@ -222,7 +254,6 @@ def salva_file_calibrazione():
 
 # --- Ciclo Principale ---
 def main():
-    # Assicura che la directory config esista
     os.makedirs(CONFIG_DIR, exist_ok=True)
     carica_dati_esistenti()
 
@@ -234,7 +265,6 @@ def main():
     print("\nIMPORTANTE: Posiziona il sensore in modo che 'veda' le luci.")
 
     while True:
-        # Avvia la lettura live
         stop_live_thread.clear()
         live_thread = threading.Thread(target=debug_lettura_live_thread, daemon=True)
         live_thread.start()
@@ -249,12 +279,11 @@ def main():
             print("\nUscita.");
             break
 
-        # Ferma la lettura live
         stop_live_thread.set()
         live_thread.join(timeout=1.0)
 
-        # --- MODIFICA V 1.04: Range input 1-8 ---
-        scelta = input("Inserisci la tua scelta (1-8): ")
+        # --- MODIFICA V 1.09: Range 1-9 ---
+        scelta = input("Inserisci la tua scelta (1-9): ")
 
         if scelta == '1':
             print("\n--- 1. Campiona VERDE ---")
@@ -307,7 +336,6 @@ def main():
                     nuovo_tempo = int(nuovo_tempo_str)
                     dati_calibrazione_temporanei["integration_time"] = nuovo_tempo
                     print(f"✅ Tempo Integrazione impostato su: {nuovo_tempo}ms")
-                    # Riavvia il sensore main per usare il new time
                     sensor_main = inizializza_sensore()
                 else:
                     print("   Nessuna modifica.")
@@ -315,9 +343,32 @@ def main():
                 print("   ❌ Errore: Inserisci solo un numero (es. 250).")
             time.sleep(1)
 
-        # --- MODIFICA V 1.04: Nuova Opzione 6 ---
+        # --- MODIFICA V 1.09: Nuova Opzione 6 (Gain) ---
         elif scelta == '6':
-            print("\n--- 6. Abilita/Disabilita Log di Debug ---")
+            print("\n--- 6. Imposta Gain Sensore (Sensibilità) ---")
+            current_gain = dati_calibrazione_temporanei.get('gain', 4)
+            print(f"   Valore Attuale: {current_gain}x")
+            print(f"   Valori validi: {VALID_GAINS}")
+            print(f"   CONSIGLIO: 4 (Rumore basso), 16 (Standard).")
+            try:
+                nuovo_gain_str = input(f"   Inserisci nuovo gain (INVIO per {current_gain}): ")
+                if nuovo_gain_str:
+                    nuovo_gain = int(nuovo_gain_str)
+                    if nuovo_gain in VALID_GAINS:
+                        dati_calibrazione_temporanei["gain"] = nuovo_gain
+                        print(f"✅ Gain impostato su: {nuovo_gain}x")
+                        sensor_main = inizializza_sensore()
+                    else:
+                        print(f"   ❌ Errore: Valore non valido. Scegli tra {VALID_GAINS}.")
+                else:
+                    print("   Nessuna modifica.")
+            except ValueError:
+                print(f"   ❌ Errore: Inserisci solo un numero (es. 4).")
+            time.sleep(1)
+        # --- FINE MODIFICA ---
+
+        elif scelta == '7':
+            print("\n--- 7. Abilita/Disabilita Log di Debug ---")
             current_status = dati_calibrazione_temporanei.get('debug_logging', False)
             nuovo_stato = not current_status
             dati_calibrazione_temporanei["debug_logging"] = nuovo_stato
@@ -327,18 +378,17 @@ def main():
             else:
                 print("❌ Log di Debug DISABILITATO.")
             time.sleep(1)
-        # --- FINE MODIFICA ---
 
-        elif scelta == '7':  # Salva
+        elif scelta == '8':  # Salva
             if salva_file_calibrazione():
                 break  # Esce dal loop
 
-        elif scelta == '8':  # Esci
+        elif scelta == '9':  # Esci
             print("\nUscita senza salvataggio.")
             break  # Esce dal loop
 
         else:
-            print(f"Scelta non valida. Inserisci un numero da 1 a 8.")
+            print(f"Scelta non valida. Inserisci un numero da 1 a 9.")
             time.sleep(1)
 
     print("Programma di calibrazione terminato.")

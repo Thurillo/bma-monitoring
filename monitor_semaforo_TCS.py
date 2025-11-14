@@ -3,16 +3,18 @@
 # File: monitor_semaforo_TCS.py
 # Directory: [root]
 # Ultima Modifica: 2025-11-14
-# Versione: 1.08
+# Versione: 1.09
 # ---
 
 """
 MONITOR SEMAFORO - Versione TCS34725 (4 Stati)
 
-V 1.08:
-- Riportati i parametri di ATTESA (Blink) a valori più severi (0.35 / 6)
-  su richiesta dell'utente, per massimizzare la stabilità
-  contro i falsi positivi (flicker).
+V 1.09:
+- Aggiunta lettura GAIN da file di calibrazione.
+- Il gain (sensibilità) è ora configurabile
+  per ridurre il "rumore di fondo" (noise floor)
+  che causa i falsi rilevamenti di SPENTO.
+- Default impostato a 4x (invece di 16x).
 """
 
 import time
@@ -37,15 +39,11 @@ CAMPIONI_PER_LETTURA = 1
 BUFFER_SIZE = 30
 LOOP_SLEEP_TIME = 0.1
 STATE_PERSISTENCE_SECONDS = 0.5
-
-# --- MODIFICHE V 1.08: Parametri riportati a V 1.06 (severi) ---
-BLINK_THRESHOLD_PERCENT = 0.35  # (35%) - Aumentato da 0.25
-MIN_TRANSITIONS_FOR_BLINK = 6  # Aumentato da 4
-# --- FINE MODIFICHE V 1.08 ---
+BLINK_THRESHOLD_PERCENT = 0.35
+MIN_TRANSITIONS_FOR_BLINK = 6
 
 # --- CONFIGURAZIONE DEBUG LOGGING (V 1.06) ---
-# DEBUG_LOGGING è ora controllato dal file di calibrazione
-MAX_DEBUG_LINES = 5000  # Limite righe per il file di debug
+MAX_DEBUG_LINES = 5000
 # --- FINE CONFIGURAZIONE ---
 
 # --- CONFIGURAZIONE MQTT (e Percorsi) ---
@@ -58,35 +56,43 @@ MQTT_TRIGGER_TOPIC = "bma/cambiostato"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_DIR = os.path.join(SCRIPT_DIR, "config")
 CALIBRATION_FILE = os.path.join(CONFIG_DIR, "calibrazione.json")
-
-# --- V 1.06: Percorso per la cartella LOG ---
 LOG_DIR = os.path.join(SCRIPT_DIR, "LOG")
-# --- FINE V 1.06 ---
-
-# --- VARIABILE GLOBALE PER STATO CONNESSIONE ---
-is_mqtt_connected = False
 # ----------------------------------------
 
-# --- V 1.06: Variabili Globali per Logging ---
+is_mqtt_connected = False
 current_log_file_path = None
 current_log_line_count = 0
 CSV_HEADER = "Timestamp,R,G,B,StatoIstantaneo,StatoComposito\n"
-DEBUG_LOGGING_ENABLED = False  # Controllato da config
+DEBUG_LOGGING_ENABLED = False
 
 
-# --- FINE V 1.06 ---
+# ----------------------------------------
 
 # --- Inizializzazione Hardware ---
 
-def inizializza_sensore(integration_time):
+# --- MODIFICA V 1.09: Aggiunto 'gain' ---
+def inizializza_sensore(integration_time, gain):
     """Inizializza il sensore TCS34725."""
     print("🔧 Inizializzazione sensore TCS34725...")
     try:
         i2c = busio.I2C(board.SCL, board.SDA)
         sensor = adafruit_tcs34725.TCS34725(i2c)
         sensor.integration_time = integration_time
-        sensor.gain = 16
-        print(f"✅ Sensore inizializzato (Time: {integration_time}ms, Gain: 16x).")
+
+        # Mappa il valore numerico del gain all'impostazione della libreria
+        if gain == 1:
+            sensor.gain = adafruit_tcs34725.GAIN_1X
+        elif gain == 4:
+            sensor.gain = adafruit_tcs34725.GAIN_4X
+        elif gain == 16:
+            sensor.gain = adafruit_tcs34725.GAIN_16X
+        elif gain == 60:
+            sensor.gain = adafruit_tcs34725.GAIN_60X
+        else:
+            print(f"   ⚠️ Gain {gain} non valido, imposto 4x.")
+            sensor.gain = adafruit_tcs34725.GAIN_4X
+
+        print(f"✅ Sensore inizializzato (Time: {integration_time}ms, Gain: {gain}x).")
         return sensor
     except Exception as e:
         print(f"❌ ERRORE: Impossibile trovare il sensore TCS34725.")
@@ -96,7 +102,7 @@ def inizializza_sensore(integration_time):
 
 def carica_calibrazione():
     """Carica i dati di calibrazione dal file JSON."""
-    global DEBUG_LOGGING_ENABLED  # V 1.07: Imposta flag globale
+    global DEBUG_LOGGING_ENABLED
 
     if not os.path.exists(CALIBRATION_FILE):
         print(f"❌ ERRORE: File di calibrazione non trovato!")
@@ -112,7 +118,6 @@ def carica_calibrazione():
             print("   Esegui 'utils/calibra_sensore.py' per ricalibrare.")
             return None
 
-        # V 1.07: Carica l'impostazione di debug dal file
         DEBUG_LOGGING_ENABLED = data.get('debug_logging', False)
         if DEBUG_LOGGING_ENABLED:
             print("ℹ️  Logging di Debug Avanzato ATTIVO (scrive su /LOG)")
@@ -201,7 +206,6 @@ def analyze_state_buffer(buffer):
     if verde_count > 0:
         percent_spento = spento_count / len(buffer)
 
-        # Candidato al lampeggio? (V1.08: ora 35%)
         if percent_spento >= BLINK_THRESHOLD_PERCENT:
             transitions = 0
             for i in range(len(buffer) - 1):
@@ -209,17 +213,14 @@ def analyze_state_buffer(buffer):
                         (buffer[i] == "SPENTO" and buffer[i + 1] == "VERDE"):
                     transitions += 1
 
-            # VERO lampeggio? (V1.08: ora 6 transizioni)
             if transitions >= MIN_TRANSITIONS_FOR_BLINK:
                 return "ATTESA"
             else:
-                # È una TRANSIZIONE, decide lo stato dominante
                 if verde_count > spento_count:
                     return "VERDE"
                 else:
                     return "SPENTO"
         else:
-            # VERDE solido
             return "VERDE"
 
     # REGOLA 3: SPENTO
@@ -231,11 +232,10 @@ def write_debug_log(timestamp_str, rgb, instant_state, composite_state):
     """Scrive sul file di debug CSV, gestendo la rotazione del file."""
     global current_log_file_path, current_log_line_count, DEBUG_LOGGING_ENABLED
 
-    if not DEBUG_LOGGING_ENABLED:  # V 1.07: Controlla flag
+    if not DEBUG_LOGGING_ENABLED:
         return
 
     try:
-        # Controlla se dobbiamo creare un nuovo file
         if current_log_file_path is None or current_log_line_count >= MAX_DEBUG_LINES:
             now_filename = datetime.now().strftime('%Y-%m-%d_%H%M%S')
             new_filename = f"debug_log_{now_filename}.csv"
@@ -259,7 +259,6 @@ def write_debug_log(timestamp_str, rgb, instant_state, composite_state):
 
 
 # --- Funzioni MQTT ---
-
 def on_connect(client, userdata, flags, rc, properties):
     """Callback per quando ci si connette al broker."""
     global is_mqtt_connected
@@ -283,28 +282,32 @@ def on_disconnect(client, userdata, flags, reason_code, properties):
 # --- Ciclo Principale ---
 
 def main():
-    global is_mqtt_connected, DEBUG_LOGGING_ENABLED  # V 1.07
+    global is_mqtt_connected, DEBUG_LOGGING_ENABLED
 
     calibrated_data = carica_calibrazione()
     if not calibrated_data:
         print("Impossibile avviare. File di calibrazione mancante o corrotto.")
         return
 
-    # --- V 1.06: Crea la cartella LOG se non esiste ---
-    if DEBUG_LOGGING_ENABLED:  # V 1.07: Controlla se il logging è abilitato
+    if DEBUG_LOGGING_ENABLED:
         try:
             os.makedirs(LOG_DIR, exist_ok=True)
         except Exception as e:
             print(f"❌ ERRORE: Impossibile creare la directory LOG: {e}")
             print("   Il debug logging CSV sarà disabilitato.")
             DEBUG_LOGGING_ENABLED = False
-    # --- FINE V 1.06 ---
 
+    # --- MODIFICA V 1.09: Leggi integration_time e gain ---
     integration_time = calibrated_data.get('integration_time', 250)
+    gain = calibrated_data.get('gain', 4)  # Default a 4x (invece di 16)
+
     if integration_time == 250 and 'integration_time' not in calibrated_data:
         print("⚠️  'integration_time' non trovato in config, uso default: 250ms")
+    if gain == 4 and 'gain' not in calibrated_data:
+        print("⚠️  'gain' non trovato in config, uso default: 4x")
+    # --- FINE MODIFICA V 1.09 ---
 
-    sensor = inizializza_sensore(integration_time)
+    sensor = inizializza_sensore(integration_time, gain)
     if not sensor:
         print("Impossibile avviare. Controlla hardware.")
         return
@@ -341,7 +344,7 @@ def main():
     stato_pubblicato = None
     last_published_change_time = 0
 
-    prev_composite_state = None  # Per tracciare i cambi per il debug log
+    prev_composite_state = None
 
     print("Monitoraggio attivo.")
 
@@ -352,7 +355,6 @@ def main():
 
             stato_composito = analyze_state_buffer(visual_state_buffer)
 
-            # --- Logica di Pubblicazione ---
             stato_da_pubblicare = None
             if stato_composito != "SPENTO":
                 stato_da_pubblicare = stato_composito
@@ -364,12 +366,10 @@ def main():
                 else:
                     stato_da_pubblicare = stato_pubblicato
 
-                    # --- DEBUG LOGGING (STRATEGIA 1) V 1.07 ---
             if stato_composito != prev_composite_state:
                 now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
                 write_debug_log(now_str, rgb_corrente, stato_corrente, stato_composito)
                 prev_composite_state = stato_composito
-                # --- FINE DEBUG LOGGING ---
 
             if stato_da_pubblicare != stato_pubblicato:
                 stato_pubblicato = stato_da_pubblicare
