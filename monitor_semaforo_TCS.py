@@ -3,18 +3,22 @@
 # File: monitor_semaforo_TCS.py
 # Directory: [root]
 # Ultima Modifica: 2025-11-14
-# Versione: 1.17
+# Versione: 1.18
 # ---
 
 """
 MONITOR SEMAFORO - Versione TCS34725 (4 Stati)
 
-V 1.17:
-- Ridotti i requisiti per lo stato ATTESA per
-  aumentare la stabilità e prevenire l'oscillazione
-  tra ATTESA e VERDE.
-- BLINK_THRESHOLD_PERCENT: 0.25 -> 0.15 (15%)
-- MIN_TRANSITIONS_FOR_BLINK: 4 -> 2
+V 1.18:
+- INVERSIONE LOGICA (come da richiesta utente).
+- Riscritto 'analyze_state_buffer'.
+- Aggiunta STEADY_STATE_THRESHOLD = 0.90 (90%).
+- VERDE e SPENTO ora richiedono il 90% del buffer
+  per essere considerati 'fissi'.
+- ATTESA è definito come un mix di VERDE e SPENTO
+  che non raggiunge le soglie 'fisse'.
+- Rimosse costanti 'BLINK_THRESHOLD_PERCENT' e
+  'MIN_TRANSITIONS_FOR_BLINK' (non più necessarie).
 """
 
 import time
@@ -38,10 +42,9 @@ except ImportError:
 CAMPIONI_PER_LETTURA = 1
 LOOP_SLEEP_TIME = 0.1
 STATE_PERSISTENCE_SECONDS = 0.5
-# --- MODIFICA V 1.17 ---
-BLINK_THRESHOLD_PERCENT = 0.15
-MIN_TRANSITIONS_FOR_BLINK = 2
-# --- FINE MODIFICA V 1.17 ---
+# --- MODIFICA V 1.18: Nuova logica di soglia ---
+STEADY_STATE_THRESHOLD = 0.90  # (90%)
+# --- FINE MODIFICA V 1.18 ---
 
 # --- CONFIGURAZIONE DEBUG LOGGING (V 1.06) ---
 MAX_DEBUG_LINES = 5000
@@ -193,40 +196,49 @@ def get_instant_status(sensor, calib_data):
     return stato_piu_vicino, rgb_medio
 
 
+# --- MODIFICA V 1.18: Funzione di analisi riscritta ---
 def analyze_state_buffer(buffer):
-    """Analizza il buffer per determinare lo stato composito."""
+    """
+    Analizza il buffer per determinare lo stato composito.
+    (Logica V 1.18 - Inversione delle priorità)
+    """
     rosso_count = buffer.count("ROSSO")
     verde_count = buffer.count("VERDE")
     spento_count = buffer.count("SPENTO")
 
-    # REGOLA 1: ROSSO ha priorità
+    # REGOLA 1: ROSSO ha la priorità assoluta.
+    # Se c'è ANCHE UN SOLO "ROSSO" nel buffer, lo stato è ROSSO.
     if rosso_count > 0:
         return "ROSSO"
 
-    # REGOLA 2: VERDE (fisso o lampeggiante)
-    if verde_count > 0:
-        percent_spento = spento_count / len(buffer)
+    # REGOLA 2: SPENTO (Fisso)
+    # Se non c'è ROSSO, controlliamo se è SPENTO.
+    # Richiede che il 90% (STEADY_STATE_THRESHOLD) del buffer sia SPENTO.
+    if spento_count / len(buffer) >= STEADY_STATE_THRESHOLD:
+        return "SPENTO"
 
-        if percent_spento >= BLINK_THRESHOLD_PERCENT:
-            transitions = 0
-            for i in range(len(buffer) - 1):
-                if (buffer[i] == "VERDE" and buffer[i + 1] == "SPENTO") or \
-                        (buffer[i] == "SPENTO" and buffer[i + 1] == "VERDE"):
-                    transitions += 1
+    # REGOLA 3: VERDE (Fisso)
+    # Se non è ROSSO e non è SPENTO Fisso, controlliamo se è VERDE Fisso.
+    # Richiede che il 90% (STEADY_STATE_THRESHOLD) del buffer sia VERDE.
+    if verde_count / len(buffer) >= STEADY_STATE_THRESHOLD:
+        return "VERDE"
 
-            if transitions >= MIN_TRANSITIONS_FOR_BLINK:
-                return "ATTESA"
-            else:
-                if verde_count > spento_count:
-                    return "VERDE"
-                else:
-                    return "SPENTO"
-        else:
-            return "VERDE"
+    # REGOLA 4: ATTESA (Lampeggiante)
+    # Se non è ROSSO, né SPENTO Fisso, né VERDE Fisso,
+    # ma contiene SIA VERDE CHE SPENTO, allora deve essere ATTESA.
+    if verde_count > 0 and spento_count > 0:
+        return "ATTESA"
 
-    # REGOLA 3: SPENTO
-    return "SPENTO"
+    # REGOLA 5: Fallback (Stato di transizione o buffer non ancora pieno)
+    # Se non è nessuna delle precedenti (es. buffer solo VERDE ma < 90%),
+    # manteniamo lo stato dominante tra VERDE e SPENTO.
+    if verde_count > spento_count:
+        return "VERDE"
+    else:
+        return "SPENTO"
 
+
+# --- FINE MODIFICA V 1.18 ---
 
 # --- FUNZIONE LOGGING V 1.06 (STRATEGIA 1): ROTAZIONE FILE ---
 def write_debug_log(timestamp_str, rgb, instant_state, composite_state):
