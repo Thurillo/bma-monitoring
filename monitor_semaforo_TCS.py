@@ -3,17 +3,17 @@
 # File: monitor_semaforo_TCS.py
 # Directory: [root]
 # Ultima Modifica: 2025-11-17
-# Versione: 1.20
+# Versione: 1.21
 # ---
 
 """
 MONITOR SEMAFORO - Versione TCS34725 (4 Stati)
 
-V 1.20:
-- STEADY_STATE_THRESHOLD: Default abbassato da 95% a 90%
-  per aumentare la "zona morta" dello stato ATTESA e
-  prevenire i "ghost state" (stati fantasma)
-  causati da artefatti di campionamento.
+V 1.21:
+- LOOP_SLEEP_TIME abbassato da 0.1 a 0.05 (da 100ms a 50ms)
+- Default 'integration_time' abbassato da 250ms a 150ms
+  per un campionamento più veloce (quasi 2x), necessario
+  a catturare meglio i lampeggi (stato ATTESA).
 """
 
 import time
@@ -35,7 +35,9 @@ except ImportError:
 
 # --- CONFIGURAZIONE LOGICA DI RILEVAMENTO ---
 CAMPIONI_PER_LETTURA = 1
-LOOP_SLEEP_TIME = 0.1
+# --- MODIFICA V 1.21: Loop più veloce ---
+LOOP_SLEEP_TIME = 0.05  # 50ms (era 0.1)
+# --- FINE MODIFICA V 1.21 ---
 STATE_PERSISTENCE_SECONDS = 0.5
 # --- MODIFICA V 1.19: STEADY_STATE_THRESHOLD rimosso da qui ---
 
@@ -316,15 +318,19 @@ def main():
             print("   Il debug logging CSV sarà disabilitato.")
             DEBUG_LOGGING_ENABLED = False
 
-    integration_time = calibrated_data.get('integration_time', 250)
+    # --- MODIFICA V 1.21: Default cambiato a 150 ---
+    integration_time = calibrated_data.get('integration_time', 150)
+    # --- FINE MODIFICA V 1.21 ---
     gain = calibrated_data.get('gain', 4)
 
     # --- MODIFICA V 1.16: Carica BUFFER_SIZE da config ---
     BUFFER_SIZE = calibrated_data.get('buffer_size', 35)
     # --- FINE MODIFICA V 1.16 ---
 
-    if integration_time == 250 and 'integration_time' not in calibrated_data:
-        print("⚠️  'integration_time' non trovato in config, uso default: 250ms")
+    # --- MODIFICA V 1.21: Default cambiato a 150 ---
+    if integration_time == 150 and 'integration_time' not in calibrated_data:
+        print("⚠️  'integration_time' non trovato in config, uso default: 150ms")
+    # --- FINE MODIFICA V 1.21 ---
     if gain == 4 and 'gain' not in calibrated_data:
         print("⚠️  'gain' non trovato in config, uso default: 4x")
     # --- MODIFICA V 1.16 ---

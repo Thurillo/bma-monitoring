@@ -3,17 +3,17 @@
 # File: calibra_sensore.py
 # Directory: utils/
 # Ultima Modifica: 2025-11-17
-# Versione: 1.17
+# Versione: 1.18
 # ---
 
 """
 SCRIPT: CALIBRAZIONE MANUALE (Ambiente Reale)
 
-V 1.17:
-- 'steady_state_threshold' (Soglia Stabilità):
-  Default abbassato da 95% a 90% per evitare
-  "ghost state" (stati fantasma).
-- Aggiornato testo di aiuto.
+V 1.18:
+- 'integration_time': Default abbassato da 250ms a 150ms
+  per un campionamento più veloce e un miglior
+  rilevamento dello stato ATTESA.
+- Testi di aiuto aggiornati per raccomandare 150ms.
 """
 
 import board
@@ -55,7 +55,9 @@ def calcola_distanza_rgb_raw(rgb1_tuple, rgb2_dict):
 # --- Inizializzazione Hardware ---
 def inizializza_sensore():
     print("🔧 Inizializzazione sensore TCS34725...")
-    integration_time = dati_calibrazione_temporanei.get('integration_time', 250)
+    # --- MODIFICA V 1.18: Default cambiato a 150 ---
+    integration_time = dati_calibrazione_temporanei.get('integration_time', 150)
+    # --- FINE MODIFICA V 1.18 ---
     gain = dati_calibrazione_temporanei.get('gain', 4)
 
     try:
@@ -234,9 +236,10 @@ def stampa_menu():
     machine_id = dati_calibrazione_temporanei.get('machine_id')
     stato_id = f"✅ IMPOSTATO ({machine_id})" if machine_id else "❌ DA IMPOSTARE"
 
-    # Tempo di Integrazione
-    integration_time = dati_calibrazione_temporanei.get('integration_time', 250)
+    # --- MODIFICA V 1.18: Default cambiato a 150 ---
+    integration_time = dati_calibrazione_temporanei.get('integration_time', 150)
     stato_integrazione = f"✅ IMPOSTATO ({integration_time}ms)"
+    # --- FINE MODIFICA V 1.18 ---
 
     gain = dati_calibrazione_temporanei.get('gain', 4)  # Default 4
     stato_gain = f"✅ IMPOSTATO ({gain}x)"
@@ -259,7 +262,9 @@ def stampa_menu():
     print(f"3. Campiona 'Spento' (MEDIA buio)                {stato_buio}")
     print("-" * 55)
     print(f"4. Imposta ID Macchina (per MQTT)                  {stato_id}")
+    # --- MODIFICA V 1.18: Testo aggiornato ---
     print(f"5. Imposta Tempo Integrazione (Sensore)          {stato_integrazione}")
+    # --- FINE MODIFICA V 1.18 ---
     print(f"6. Imposta Gain Sensore (Sensibilità)            {stato_gain}")
     print(f"7. Abilita/Disabilita Log di Debug                 {stato_debug}")
     # --- MODIFICA V 1.15 ---
@@ -278,9 +283,11 @@ def salva_file_calibrazione():
     """Controlla e salva i dati di calibrazione."""
     print("\n--- RIEPILOGO CONFIGURAZIONE ---")
 
+    # --- MODIFICA V 1.18: Default cambiato a 150 ---
     if "integration_time" not in dati_calibrazione_temporanei:
-        print("   ℹ️ 'Tempo Integrazione' non impostato, imposto il default: 250ms.")
-        dati_calibrazione_temporanei["integration_time"] = 250
+        print("   ℹ️ 'Tempo Integrazione' non impostato, imposto il default: 150ms.")
+        dati_calibrazione_temporanei["integration_time"] = 150
+    # --- FINE MODIFICA V 1.18 ---
 
     if "gain" not in dati_calibrazione_temporanei:
         print("   ℹ️ 'Gain' non impostato, imposto il default: 4x.")
@@ -436,9 +443,11 @@ def main():
 
         elif scelta == '5':
             print("\n--- 5. Imposta Tempo Integrazione (ms) ---")
-            current_time = dati_calibrazione_temporanei.get('integration_time', 250)
+            # --- MODIFICA V 1.18: Default cambiato a 150 ---
+            current_time = dati_calibrazione_temporanei.get('integration_time', 150)
             print(f"   Valore Attuale: {current_time}ms")
-            print(f"   CONSIGLIO: 250 (Stabile), 150 (Veloce). Deve corrispondere al monitor.")
+            print(f"   CONSIGLIO: 150 (Veloce, default), 250 (Stabile).")
+            # --- FINE MODIFICA V 1.18 ---
             try:
                 nuovo_tempo_str = input(f"   Inserisci nuovo tempo (INVIO per {current_time}): ")
                 if nuovo_tempo_str:
@@ -449,7 +458,7 @@ def main():
                 else:
                     print("   Nessuna modifica.")
             except ValueError:
-                print("   ❌ Errore: Inserisci solo un numero (es. 250).")
+                print("   ❌ Errore: Inserisci solo un numero (es. 150).")
             time.sleep(1)
 
         elif scelta == '6':
