@@ -2,19 +2,18 @@
 # ---
 # File: calibra_sensore.py
 # Directory: utils/
-# Ultima Modifica: 2025-11-14
-# Versione: 1.16
+# Ultima Modifica: 2025-11-17
+# Versione: 1.17
 # ---
 
 """
 SCRIPT: CALIBRAZIONE MANUALE (Ambiente Reale)
 
-V 1.16:
-- Aggiunta Opzione 9 per configurare 'steady_state_threshold'.
-- Questo valore (es. 95) definisce la % del buffer
-  necessaria per dichiarare VERDE fisso o SPENTO fisso.
-- Salvato in calibrazione.json. Default 95.
-- Spostati Salva/Esci a 10/11.
+V 1.17:
+- 'steady_state_threshold' (Soglia Stabilità):
+  Default abbassato da 95% a 90% per evitare
+  "ghost state" (stati fantasma).
+- Aggiornato testo di aiuto.
 """
 
 import board
@@ -250,10 +249,10 @@ def stampa_menu():
     stato_buffer = f"✅ IMPOSTATO ({buffer_size} letture)"
     # --- FINE MODIFICA V 1.15 ---
 
-    # --- MODIFICA V 1.16 ---
-    soglia = dati_calibrazione_temporanei.get('steady_state_threshold', 95)  # Default 95
+    # --- MODIFICA V 1.17 ---
+    soglia = dati_calibrazione_temporanei.get('steady_state_threshold', 90)  # Default 90
     stato_soglia = f"✅ IMPOSTATO ({soglia}%)"
-    # --- FINE MODIFICA V 1.16 ---
+    # --- FINE MODIFICA V 1.17 ---
 
     print(f"1. Campiona 'Verde' (PICCO luce)                 {stato_verde}")
     print(f"2. Campiona 'Rosso' (PICCO luce)                 {stato_rosso}")
@@ -267,7 +266,7 @@ def stampa_menu():
     print(f"8. Imposta Buffer Size (Stabilità Monitor)       {stato_buffer}")
     # --- FINE MODIFICA V 1.15 ---
     # --- MODIFICA V 1.16 ---
-    print(f"9. Imposta Soglia Stabilità (es. 95%)            {stato_soglia}")
+    print(f"9. Imposta Soglia Stabilità (es. 90%)            {stato_soglia}")
     print("-" * 55)
     print("10. Salva calibrazione e configurazione su file ed Esci")
     print("11. Esci SENZA salvare")
@@ -296,11 +295,11 @@ def salva_file_calibrazione():
         dati_calibrazione_temporanei["buffer_size"] = 35
     # --- FINE MODIFICA V 1.15 ---
 
-    # --- MODIFICA V 1.16 ---
+    # --- MODIFICA V 1.17 ---
     if "steady_state_threshold" not in dati_calibrazione_temporanei:
-        print("   ℹ️ 'Soglia Stabilità' non impostata, imposto il default: 95%.")
-        dati_calibrazione_temporanei["steady_state_threshold"] = 95
-    # --- FINE MODIFICA V 1.16 ---
+        print("   ℹ️ 'Soglia Stabilità' non impostata, imposto il default: 90%.")
+        dati_calibrazione_temporanei["steady_state_threshold"] = 90
+    # --- FINE MODIFICA V 1.17 ---
 
     mancanti = []
     if "verde" not in dati_calibrazione_temporanei: mancanti.append("Verde")
@@ -508,12 +507,12 @@ def main():
                 print("   ❌ Errore: Inserisci solo un numero (es. 35).")
             time.sleep(1)
 
-        # --- MODIFICA V 1.16 ---
+        # --- MODIFICA V 1.17 ---
         elif scelta == '9':
             print("\n--- 9. Imposta Soglia Stabilità (Stato Fisso) ---")
-            current_soglia = dati_calibrazione_temporanei.get('steady_state_threshold', 95)
+            current_soglia = dati_calibrazione_temporanei.get('steady_state_threshold', 90)  # Default 90
             print(f"   Valore Attuale: {current_soglia}%")
-            print(f"   CONSIGLIO: 95 (Molto severo), 90 (Standard).")
+            print(f"   CONSIGLIO: 90 (Stabile, default), 85 (Più tollerante).")  # Testo aggiornato
             try:
                 nuova_soglia_str = input(f"   Inserisci nuova soglia % (INVIO per {current_soglia}): ")
                 if nuova_soglia_str:
@@ -526,7 +525,7 @@ def main():
                 else:
                     print("   Nessuna modifica.")
             except ValueError:
-                print("   ❌ Errore: Inserisci solo un numero (es. 95).")
+                print("   ❌ Errore: Inserisci solo un numero (es. 90).")
             time.sleep(1)
 
         elif scelta == '10':  # Salva
@@ -540,7 +539,7 @@ def main():
         else:
             print(f"Scelta non valida. Inserisci un numero da 1 a 11.")
             time.sleep(1)
-        # --- FINE MODIFICA V 1.16 ---
+        # --- FINE MODIFICA V 1.17 ---
 
     print("Programma di calibrazione terminato.")
 

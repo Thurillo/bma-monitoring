@@ -2,18 +2,18 @@
 # ---
 # File: monitor_semaforo_TCS.py
 # Directory: [root]
-# Ultima Modifica: 2025-11-14
-# Versione: 1.19
+# Ultima Modifica: 2025-11-17
+# Versione: 1.20
 # ---
 
 """
 MONITOR SEMAFORO - Versione TCS34725 (4 Stati)
 
-V 1.19:
-- STEADY_STATE_THRESHOLD non è più hardcoded (era 0.90).
-- Ora carica 'steady_state_threshold' da 'calibrazione.json'.
-- Se non lo trova, usa 0.95 (95%) come nuovo default
-  per rendere il rilevamento 'VERDE fisso' più severo.
+V 1.20:
+- STEADY_STATE_THRESHOLD: Default abbassato da 95% a 90%
+  per aumentare la "zona morta" dello stato ATTESA e
+  prevenire i "ghost state" (stati fantasma)
+  causati da artefatti di campionamento.
 """
 
 import time
@@ -67,11 +67,11 @@ CSV_HEADER = "Timestamp,R,G,B,StatoIstantaneo,StatoComposito\n"
 DEBUG_LOGGING_ENABLED = False
 # ----------------------------------------
 
-# --- MODIFICA V 1.19: Variabile globale per la soglia ---
-STEADY_STATE_THRESHOLD = 0.95  # Default, verrà sovrascritto
+# --- MODIFICA V 1.20: Default cambiato a 0.90 ---
+STEADY_STATE_THRESHOLD = 0.90  # Default, verrà sovrascritto
 
 
-# --- FINE MODIFICA V 1.19 ---
+# --- FINE MODIFICA V 1.20 ---
 
 # --- Inizializzazione Hardware ---
 
@@ -125,14 +125,14 @@ def carica_calibrazione():
         else:
             print("ℹ️  Logging di Debug Avanzato DISATTIVATO.")
 
-        # --- MODIFICA V 1.19: Carica STEADY_STATE_THRESHOLD ---
-        # Carica il valore (es. 95) e lo converte in float (0.95)
-        soglia_percent = data.get('steady_state_threshold', 95)  # Default 95%
+        # --- MODIFICA V 1.20: Carica STEADY_STATE_THRESHOLD, default 90 ---
+        # Carica il valore (es. 90) e lo converte in float (0.90)
+        soglia_percent = data.get('steady_state_threshold', 90)  # Default 90%
         STEADY_STATE_THRESHOLD = soglia_percent / 100.0
-        if soglia_percent == 95 and 'steady_state_threshold' not in data:
-            print(f"⚠️  'steady_state_threshold' non trovato in config, uso default: 95%")
+        if soglia_percent == 90 and 'steady_state_threshold' not in data:
+            print(f"⚠️  'steady_state_threshold' non trovato in config, uso default: 90%")
         print(f"ℹ️  Soglia di stabilità impostata a: {soglia_percent}%")
-        # --- FINE MODIFICA V 1.19 ---
+        # --- FINE MODIFICA V 1.20 ---
 
         print(f"✅ Dati di calibrazione caricati da '{CALIBRATION_FILE}'")
         return data
@@ -219,13 +219,13 @@ def analyze_state_buffer(buffer):
 
     # REGOLA 2: SPENTO (Fisso)
     # Se non c'è ROSSO, controlliamo se è SPENTO.
-    # Richiede che il 90% (STEADY_STATE_THRESHOLD) del buffer sia SPENTO.
+    # Richiede che la % (STEADY_STATE_THRESHOLD) del buffer sia SPENTO.
     if spento_count / len(buffer) >= STEADY_STATE_THRESHOLD:
         return "SPENTO"
 
     # REGOLA 3: VERDE (Fisso)
     # Se non è ROSSO e non è SPENTO Fisso, controlliamo se è VERDE Fisso.
-    # Richiede che il 90% (STEADY_STATE_THRESHOLD) del buffer sia VERDE.
+    # Richiede che la % (STEADY_STATE_THRESHOLD) del buffer sia VERDE.
     if verde_count / len(buffer) >= STEADY_STATE_THRESHOLD:
         return "VERDE"
 
