@@ -2,18 +2,19 @@
 # ---
 # File: monitor_semaforo_TCS.py
 # Directory: [root]
-# Ultima Modifica: 2025-11-17
-# Versione: 1.21
+# Ultima Modifica: 2025-11-20
+# Versione: 1.22
 # ---
 
 """
 MONITOR SEMAFORO - Versione TCS34725 (4 Stati)
 
-V 1.21:
-- LOOP_SLEEP_TIME abbassato da 0.1 a 0.05 (da 100ms a 50ms)
-- Default 'integration_time' abbassato da 250ms a 150ms
-  per un campionamento più veloce (quasi 2x), necessario
-  a catturare meglio i lampeggi (stato ATTESA).
+V 1.22:
+- FIX CRITICO: Filtraggio letture (0,0,0).
+- Le letture RGB 0,0,0 sono ora considerate ERRORI di comunicazione
+  (I2C fail) e vengono ignorate, invece di essere interpretate
+  come stato "SPENTO".
+- Questo previene i falsi stati "ATTESA" causati da errori hardware.
 """
 
 import time
@@ -165,6 +166,14 @@ def leggi_rgb_stabilizzato(sensor, campioni=CAMPIONI_PER_LETTURA):
     for _ in range(campioni):
         try:
             r, g, b = leggi_rgb_attuale(sensor)
+
+            # --- MODIFICA V 1.22: Filtro Errori I2C ---
+            # Se la lettura è esattamente 0,0,0, è un errore hardware/I2C.
+            # Lo ignoriamo per non "sporcare" la media con falsi neri.
+            if r == 0 and g == 0 and b == 0:
+                continue
+                # --- FINE MODIFICA ---
+
             letture_valide += 1;
             tot_r += r;
             tot_g += g;
@@ -173,7 +182,9 @@ def leggi_rgb_stabilizzato(sensor, campioni=CAMPIONI_PER_LETTURA):
             pass
         time.sleep(0.01)
 
+        # Se tutte le letture sono fallite o erano 0,0,0
     if letture_valide == 0: return {"R": 0, "G": 0, "B": 0}
+
     return {"R": int(tot_r / letture_valide), "G": int(tot_g / letture_valide), "B": int(tot_b / letture_valide)}
 
 
@@ -188,7 +199,13 @@ def get_instant_status(sensor, calib_data):
     """Determina lo stato istantaneo (ROSSO, VERDE, SPENTO)."""
     rgb_medio = leggi_rgb_stabilizzato(sensor)
 
-    if not rgb_medio: return "SPENTO", {"R": 0, "G": 0, "B": 0}
+    # --- MODIFICA V 1.22: Gestione Errore Totale ---
+    # Se anche dopo i tentativi otteniamo 0,0,0, lo trattiamo come "ERRORE"
+    # invece che "SPENTO" per non triggerare ATTESA.
+    # Ritorniamo None per dire "Nessuna lettura valida"
+    if rgb_medio["R"] == 0 and rgb_medio["G"] == 0 and rgb_medio["B"] == 0:
+        return None, rgb_medio
+    # --- FINE MODIFICA ---
 
     dist_verde = calcola_distanza_rgb(rgb_medio, calib_data['verde'])
     dist_rosso = calcola_distanza_rgb(rgb_medio, calib_data['non_verde'])
@@ -266,7 +283,10 @@ def write_debug_log(timestamp_str, rgb, instant_state, composite_state):
                 f.write(CSV_HEADER)
             current_log_line_count = 1
 
-        line = f"{timestamp_str},{rgb['R']},{rgb['G']},{rgb['B']},{instant_state},{composite_state}\n"
+            # Gestione stato nullo per il log
+        st_ist = instant_state if instant_state else "ERR"
+
+        line = f"{timestamp_str},{rgb['R']},{rgb['G']},{rgb['B']},{st_ist},{composite_state}\n"
 
         with open(current_log_file_path, 'a') as f:
             f.write(line)
@@ -361,9 +381,18 @@ def main():
 
     for i in range(INIT_BUFFER_SIZE):
         stato_iniziale, _ = get_instant_status(sensor, calibrated_data)
-        visual_state_buffer.append(stato_iniziale)
-        print(f"   Lettura... {i + 1}/{INIT_BUFFER_SIZE} -> {stato_iniziale}   ", end="\r")
+        # --- MODIFICA V 1.22: Gestione Errore in Inizializzazione ---
+        if stato_iniziale:  # Se non è None (errore)
+            visual_state_buffer.append(stato_iniziale)
+            print(f"   Lettura... {i + 1}/{INIT_BUFFER_SIZE} -> {stato_iniziale}   ", end="\r")
+        else:
+            print(f"   Lettura... {i + 1}/{INIT_BUFFER_SIZE} -> ERRORE SENSOR ", end="\r")
+        # --- FINE MODIFICA ---
         time.sleep(LOOP_SLEEP_TIME)
+
+        # Se il buffer è vuoto (tutti errori), riempilo con SPENTO per evitare crash
+    if not visual_state_buffer:
+        for _ in range(BUFFER_SIZE): visual_state_buffer.append("SPENTO")
 
     print("\n✅ Inizializzazione completata.")
 
@@ -389,49 +418,56 @@ def main():
     try:
         while True:
             stato_corrente, rgb_corrente = get_instant_status(sensor, calibrated_data)
-            visual_state_buffer.append(stato_corrente)
 
-            stato_composito = analyze_state_buffer(visual_state_buffer)
+            # --- MODIFICA V 1.22: Ignora letture invalide ---
+            if stato_corrente:  # Se non è None
+                visual_state_buffer.append(stato_corrente)
 
-            stato_da_pubblicare = None
-            if stato_composito != "SPENTO":
-                stato_da_pubblicare = stato_composito
-                if stato_composito != stato_pubblicato:
+                stato_composito = analyze_state_buffer(visual_state_buffer)
+
+                stato_da_pubblicare = None
+                if stato_composito != "SPENTO":
+                    stato_da_pubblicare = stato_composito
+                    if stato_composito != stato_pubblicato:
+                        last_published_change_time = time.time()
+                else:
+                    if time.time() - last_published_change_time > STATE_PERSISTENCE_SECONDS:
+                        stato_da_pubblicare = "SPENTO"
+                    else:
+                        stato_da_pubblicare = stato_pubblicato
+
+                if stato_composito != prev_composite_state:
+                    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                    write_debug_log(now_str, rgb_corrente, stato_corrente, stato_composito)
+                    prev_composite_state = stato_composito
+
+                if stato_da_pubblicare != stato_pubblicato:
+                    stato_pubblicato = stato_da_pubblicare
                     last_published_change_time = time.time()
-            else:
-                if time.time() - last_published_change_time > STATE_PERSISTENCE_SECONDS:
-                    stato_da_pubblicare = "SPENTO"
-                else:
-                    stato_da_pubblicare = stato_pubblicato
 
-            if stato_composito != prev_composite_state:
-                now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-                write_debug_log(now_str, rgb_corrente, stato_corrente, stato_composito)
-                prev_composite_state = stato_composito
+                    timestamp = time.time()
+                    datetime_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(timestamp))
 
-            if stato_da_pubblicare != stato_pubblicato:
-                stato_pubblicato = stato_da_pubblicare
-                last_published_change_time = time.time()
+                    payload_data = {
+                        "stato": stato_pubblicato, "machine_id": MACHINE_ID,
+                        "timestamp": timestamp, "datetime_str": datetime_str
+                    }
+                    payload = json.dumps({"message": payload_data})
 
-                timestamp = time.time()
-                datetime_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(timestamp))
-
-                payload_data = {
-                    "stato": stato_pubblicato, "machine_id": MACHINE_ID,
-                    "timestamp": timestamp, "datetime_str": datetime_str
-                }
-                payload = json.dumps({"message": payload_data})
-
-                if is_mqtt_connected:
-                    try:
-                        client.publish(MQTT_TOPIC_STATUS, payload, qos=1, retain=True)
-                        client.publish(MQTT_TRIGGER_TOPIC, payload, qos=1, retain=True)
+                    if is_mqtt_connected:
+                        try:
+                            client.publish(MQTT_TOPIC_STATUS, payload, qos=1, retain=True)
+                            client.publish(MQTT_TRIGGER_TOPIC, payload, qos=1, retain=True)
+                            print(
+                                f"[{datetime_str}] Stato Pubblicato: {stato_pubblicato}. Invio trigger a '{MQTT_TRIGGER_TOPIC}'...")
+                        except Exception as e:
+                            print(f"   ⚠️ Errore during la pubblicazione MQTT: {e}. In attesa di riconnessione...")
+                    else:
                         print(
-                            f"[{datetime_str}] Stato Pubblicato: {stato_pubblicato}. Invio trigger a '{MQTT_TRIGGER_TOPIC}'...")
-                    except Exception as e:
-                        print(f"   ⚠️ Errore during la pubblicazione MQTT: {e}. In attesa di riconnessione...")
-                else:
-                    print(f"[{datetime_str}] Rilevato cambio: {stato_pubblicato}. MQTT OFFLINE. Messaggio non inviato.")
+                            f"[{datetime_str}] Rilevato cambio: {stato_pubblicato}. MQTT OFFLINE. Messaggio non inviato.")
+
+            # Se stato_corrente è None (Errore I2C), saltiamo il ciclo e riproviamo.
+            # Manteniamo il buffer inalterato.
 
             client.loop(timeout=LOOP_SLEEP_TIME)
 
