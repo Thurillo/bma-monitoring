@@ -3,17 +3,17 @@
 # File: calibra_sensore.py
 # Directory: utils/
 # Ultima Modifica: 2025-12-01
-# Versione: 1.19
+# Versione: 1.20
 # ---
 
 """
 SCRIPT: CALIBRAZIONE MANUALE (Ambiente Reale)
 
-V 1.19:
-- Aggiunta Opzione 10: Test Sensore (Lettura Continua).
-  Permette di vedere in tempo reale cosa "pensa" il sensore,
-  mostrando i valori RGB, le distanze dai target e lo stato
-  istantaneo rilevato. Utile per il debug.
+V 1.20:
+- Reso il loop di 'test_sensore_continuo' (Opzione 10)
+  indistruttibile. Ora cattura qualsiasi eccezione generica
+  (non solo KeyboardInterrupt) per evitare che il test si
+  interrompa da solo in caso di errori hardware momentanei.
 """
 
 import board
@@ -225,23 +225,31 @@ def test_sensore_continuo(sensor):
 
     try:
         while True:
-            # 1. Leggi
-            rgb = leggi_rgb_attuale(sensor)
+            # --- MODIFICA V 1.20: Protezione Loop ---
+            try:
+                # 1. Leggi
+                rgb = leggi_rgb_attuale(sensor)
 
-            # 2. Calcola Distanze
-            dist_v = calcola_distanza_rgb_raw(rgb, target_verde)
-            dist_r = calcola_distanza_rgb_raw(rgb, target_rosso)
-            dist_b = calcola_distanza_rgb_raw(rgb, target_buio)
+                # 2. Calcola Distanze
+                dist_v = calcola_distanza_rgb_raw(rgb, target_verde)
+                dist_r = calcola_distanza_rgb_raw(rgb, target_rosso)
+                dist_b = calcola_distanza_rgb_raw(rgb, target_buio)
 
-            # 3. Determina Stato Istantaneo (Vincitore)
-            distanze = {"VERDE": dist_v, "ROSSO": dist_r, "SPENTO": dist_b}
-            stato = min(distanze, key=distanze.get)
+                # 3. Determina Stato Istantaneo (Vincitore)
+                distanze = {"VERDE": dist_v, "ROSSO": dist_r, "SPENTO": dist_b}
+                stato = min(distanze, key=distanze.get)
 
-            # 4. Stampa (Formattata)
-            rgb_str = f"{rgb[0]},{rgb[1]},{rgb[2]}"
-            print(f"{rgb_str:<15} | {dist_v:<12.1f} | {dist_r:<12.1f} | {dist_b:<12.1f} | {stato:<10}", end="\r")
+                # 4. Stampa (Formattata)
+                rgb_str = f"{rgb[0]},{rgb[1]},{rgb[2]}"
+                print(f"{rgb_str:<15} | {dist_v:<12.1f} | {dist_r:<12.1f} | {dist_b:<12.1f} | {stato:<10}", end="\r")
 
-            time.sleep(0.2)  # Aggiornamento rapido
+                time.sleep(0.2)  # Aggiornamento rapido
+            except Exception as e:
+                # Se avviene un errore nel loop (es. sensore disconnesso momentaneamente),
+                # lo stampiamo ma NON usciamo dal loop.
+                print(f"\n❌ ERRORE NEL LOOP DI TEST: {e} - Riprovo...", end="\r")
+                time.sleep(1)  # Pausa di sicurezza per non floodare la CPU
+            # --- FINE MODIFICA V 1.20 ---
 
     except KeyboardInterrupt:
         print("\n\n🛑 Test interrotto dall'utente.")
