@@ -2,18 +2,18 @@
 # ---
 # File: calibra_sensore.py
 # Directory: utils/
-# Ultima Modifica: 2025-11-17
-# Versione: 1.18
+# Ultima Modifica: 2025-12-01
+# Versione: 1.19
 # ---
 
 """
 SCRIPT: CALIBRAZIONE MANUALE (Ambiente Reale)
 
-V 1.18:
-- 'integration_time': Default abbassato da 250ms a 150ms
-  per un campionamento più veloce e un miglior
-  rilevamento dello stato ATTESA.
-- Testi di aiuto aggiornati per raccomandare 150ms.
+V 1.19:
+- Aggiunta Opzione 10: Test Sensore (Lettura Continua).
+  Permette di vedere in tempo reale cosa "pensa" il sensore,
+  mostrando i valori RGB, le distanze dai target e lo stato
+  istantaneo rilevato. Utile per il debug.
 """
 
 import board
@@ -48,6 +48,11 @@ stop_live_thread = threading.Event()
 def calcola_distanza_rgb_raw(rgb1_tuple, rgb2_dict):
     """Calcola distanza tra una tupla (lettura) e un dict (calibrazione)."""
     r1, g1, b1 = rgb1_tuple
+
+    # Gestione sicurezza se mancano chiavi nel dict
+    if not isinstance(rgb2_dict, dict) or not all(k in rgb2_dict for k in ('R', 'G', 'B')):
+        return 9999.9  # Valore altissimo per indicare "non valido"
+
     r2, g2, b2 = rgb2_dict['R'], rgb2_dict['G'], rgb2_dict['B']
     return ((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2) ** 0.5
 
@@ -55,9 +60,7 @@ def calcola_distanza_rgb_raw(rgb1_tuple, rgb2_dict):
 # --- Inizializzazione Hardware ---
 def inizializza_sensore():
     print("🔧 Inizializzazione sensore TCS34725...")
-    # --- MODIFICA V 1.18: Default cambiato a 150 ---
     integration_time = dati_calibrazione_temporanei.get('integration_time', 150)
-    # --- FINE MODIFICA V 1.18 ---
     gain = dati_calibrazione_temporanei.get('gain', 4)
 
     try:
@@ -195,6 +198,59 @@ def debug_lettura_live_thread():
     print("\n   [LIVE] Lettura live fermata.                ")
 
 
+# --- NUOVA FUNZIONE V 1.19: TEST SENSORE CONTINUO ---
+def test_sensore_continuo(sensor):
+    """
+    Esegue un loop infinito di lettura e classificazione.
+    Simile al monitor principale, ma istantaneo (senza buffer)
+    per permettere il debug rapido.
+    """
+    print("\n" + "=" * 50)
+    print("   TEST SENSORE - LETTURA CONTINUA")
+    print("   Premi CTRL+C per fermare e tornare al menu.")
+    print("=" * 50)
+
+    # Controlla se abbiamo i dati necessari
+    if not all(k in dati_calibrazione_temporanei for k in ("verde", "non_verde", "buio")):
+        print("❌ ERRORE: Devi prima calibrare TUTTI i colori (Opzioni 1, 2, 3).")
+        return
+
+    # Recupera i target
+    target_verde = dati_calibrazione_temporanei['verde']
+    target_rosso = dati_calibrazione_temporanei['non_verde']
+    target_buio = dati_calibrazione_temporanei['buio']
+
+    print(f"{'RGB Letto':<15} | {'Dist. VERDE':<12} | {'Dist. ROSSO':<12} | {'Dist. BUIO':<12} | {'STATO':<10}")
+    print("-" * 75)
+
+    try:
+        while True:
+            # 1. Leggi
+            rgb = leggi_rgb_attuale(sensor)
+
+            # 2. Calcola Distanze
+            dist_v = calcola_distanza_rgb_raw(rgb, target_verde)
+            dist_r = calcola_distanza_rgb_raw(rgb, target_rosso)
+            dist_b = calcola_distanza_rgb_raw(rgb, target_buio)
+
+            # 3. Determina Stato Istantaneo (Vincitore)
+            distanze = {"VERDE": dist_v, "ROSSO": dist_r, "SPENTO": dist_b}
+            stato = min(distanze, key=distanze.get)
+
+            # 4. Stampa (Formattata)
+            rgb_str = f"{rgb[0]},{rgb[1]},{rgb[2]}"
+            print(f"{rgb_str:<15} | {dist_v:<12.1f} | {dist_r:<12.1f} | {dist_b:<12.1f} | {stato:<10}", end="\r")
+
+            time.sleep(0.2)  # Aggiornamento rapido
+
+    except KeyboardInterrupt:
+        print("\n\n🛑 Test interrotto dall'utente.")
+        time.sleep(1)
+
+
+# --- FINE NUOVA FUNZIONE ---
+
+
 # --- Funzioni Menu ---
 def carica_dati_esistenti():
     global dati_calibrazione_temporanei
@@ -236,10 +292,9 @@ def stampa_menu():
     machine_id = dati_calibrazione_temporanei.get('machine_id')
     stato_id = f"✅ IMPOSTATO ({machine_id})" if machine_id else "❌ DA IMPOSTARE"
 
-    # --- MODIFICA V 1.18: Default cambiato a 150 ---
+    # Tempo di Integrazione
     integration_time = dati_calibrazione_temporanei.get('integration_time', 150)
     stato_integrazione = f"✅ IMPOSTATO ({integration_time}ms)"
-    # --- FINE MODIFICA V 1.18 ---
 
     gain = dati_calibrazione_temporanei.get('gain', 4)  # Default 4
     stato_gain = f"✅ IMPOSTATO ({gain}x)"
@@ -262,9 +317,7 @@ def stampa_menu():
     print(f"3. Campiona 'Spento' (MEDIA buio)                {stato_buio}")
     print("-" * 55)
     print(f"4. Imposta ID Macchina (per MQTT)                  {stato_id}")
-    # --- MODIFICA V 1.18: Testo aggiornato ---
     print(f"5. Imposta Tempo Integrazione (Sensore)          {stato_integrazione}")
-    # --- FINE MODIFICA V 1.18 ---
     print(f"6. Imposta Gain Sensore (Sensibilità)            {stato_gain}")
     print(f"7. Abilita/Disabilita Log di Debug                 {stato_debug}")
     # --- MODIFICA V 1.15 ---
@@ -273,21 +326,22 @@ def stampa_menu():
     # --- MODIFICA V 1.16 ---
     print(f"9. Imposta Soglia Stabilità (es. 90%)            {stato_soglia}")
     print("-" * 55)
-    print("10. Salva calibrazione e configurazione su file ed Esci")
-    print("11. Esci SENZA salvare")
+    # --- MODIFICA V 1.19 ---
+    print(f"10. TEST SENSORE (Lettura Continua)              🔍")
+    print("-" * 55)
+    print("11. Salva calibrazione e configurazione su file ed Esci")
+    print("12. Esci SENZA salvare")
+    # --- FINE MODIFICA V 1.19 ---
     print("=" * 55)
-    # --- FINE MODIFICA V 1.16 ---
 
 
 def salva_file_calibrazione():
     """Controlla e salva i dati di calibrazione."""
     print("\n--- RIEPILOGO CONFIGURAZIONE ---")
 
-    # --- MODIFICA V 1.18: Default cambiato a 150 ---
     if "integration_time" not in dati_calibrazione_temporanei:
         print("   ℹ️ 'Tempo Integrazione' non impostato, imposto il default: 150ms.")
         dati_calibrazione_temporanei["integration_time"] = 150
-    # --- FINE MODIFICA V 1.18 ---
 
     if "gain" not in dati_calibrazione_temporanei:
         print("   ℹ️ 'Gain' non impostato, imposto il default: 4x.")
@@ -384,11 +438,11 @@ def main():
         stop_live_thread.set()
         live_thread.join(timeout=1.0)
 
-        # --- MODIFICA V 1.16 ---
-        scelta = input("Inserisci la tua scelta (1-11): ")
+        # --- MODIFICA V 1.19 ---
+        scelta = input("Inserisci la tua scelta (1-12): ")
 
         if scelta == '1' or scelta == '2':  # VERDE o ROSSO (PICCO)
-            # --- FINE MODIFICA V 1.16 ---
+            # --- FINE MODIFICA V 1.19 ---
             # --- Logica V 1.12 ---
             if 'buio' not in dati_calibrazione_temporanei:
                 print("\n❌ ERRORE: Devi calibrare 'Spento' (Opzione 3) PRIMA di calibrare Verde o Rosso.")
@@ -537,18 +591,22 @@ def main():
                 print("   ❌ Errore: Inserisci solo un numero (es. 90).")
             time.sleep(1)
 
-        elif scelta == '10':  # Salva
+        # --- MODIFICA V 1.19 ---
+        elif scelta == '10':
+            test_sensore_continuo(sensor_main)
+
+        elif scelta == '11':  # Salva
             if salva_file_calibrazione():
                 break  # Esce dal loop
 
-        elif scelta == '11':  # Esci
+        elif scelta == '12':  # Esci
             print("\nUscita senza salvataggio.")
             break  # Esce dal loop
 
         else:
-            print(f"Scelta non valida. Inserisci un numero da 1 a 11.")
+            print(f"Scelta non valida. Inserisci un numero da 1 a 12.")
             time.sleep(1)
-        # --- FINE MODIFICA V 1.17 ---
+        # --- FINE MODIFICA V 1.19 ---
 
     print("Programma di calibrazione terminato.")
 
