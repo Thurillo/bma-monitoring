@@ -3,17 +3,17 @@
 # File: calibra_sensore.py
 # Directory: utils/
 # Ultima Modifica: 2025-12-01
-# Versione: 1.20
+# Versione: 1.21
 # ---
 
 """
 SCRIPT: CALIBRAZIONE MANUALE (Ambiente Reale)
 
-V 1.20:
-- Reso il loop di 'test_sensore_continuo' (Opzione 10)
-  indistruttibile. Ora cattura qualsiasi eccezione generica
-  (non solo KeyboardInterrupt) per evitare che il test si
-  interrompa da solo in caso di errori hardware momentanei.
+V 1.21:
+- Migliorata Opzione 10 (Test Sensore).
+- Ora funziona anche se la calibrazione NON è stata fatta.
+  In quel caso, mostra solo i valori RGB RAW (utile per test hardware),
+  invece di dare errore e uscire.
 """
 
 import board
@@ -198,58 +198,70 @@ def debug_lettura_live_thread():
     print("\n   [LIVE] Lettura live fermata.                ")
 
 
-# --- NUOVA FUNZIONE V 1.19: TEST SENSORE CONTINUO ---
+# --- NUOVA FUNZIONE V 1.21: TEST SENSORE IBRIDO ---
 def test_sensore_continuo(sensor):
     """
-    Esegue un loop infinito di lettura e classificazione.
-    Simile al monitor principale, ma istantaneo (senza buffer)
-    per permettere il debug rapido.
+    Esegue un loop infinito di lettura.
+    Se calibrato: Mostra RGB + Distanze + Stato.
+    Se NON calibrato: Mostra solo RGB (modalità test hardware puro).
     """
     print("\n" + "=" * 50)
     print("   TEST SENSORE - LETTURA CONTINUA")
     print("   Premi CTRL+C per fermare e tornare al menu.")
     print("=" * 50)
 
-    # Controlla se abbiamo i dati necessari
-    if not all(k in dati_calibrazione_temporanei for k in ("verde", "non_verde", "buio")):
-        print("❌ ERRORE: Devi prima calibrare TUTTI i colori (Opzioni 1, 2, 3).")
-        return
+    # Controlla stato calibrazione (senza bloccare)
+    has_calibration = all(k in dati_calibrazione_temporanei for k in ("verde", "non_verde", "buio"))
 
-    # Recupera i target
-    target_verde = dati_calibrazione_temporanei['verde']
-    target_rosso = dati_calibrazione_temporanei['non_verde']
-    target_buio = dati_calibrazione_temporanei['buio']
+    if not has_calibration:
+        print("⚠️  AVVISO: Calibrazione incompleta (Colori mancanti).")
+        print("   Il test mostrerà SOLO i valori RGB raw (niente rilevamento stato).")
+        time.sleep(2)
+        # Setup variabili fittizie
+        target_verde = target_rosso = target_buio = None
+    else:
+        # Recupera i target
+        target_verde = dati_calibrazione_temporanei['verde']
+        target_rosso = dati_calibrazione_temporanei['non_verde']
+        target_buio = dati_calibrazione_temporanei['buio']
 
-    print(f"{'RGB Letto':<15} | {'Dist. VERDE':<12} | {'Dist. ROSSO':<12} | {'Dist. BUIO':<12} | {'STATO':<10}")
+    # Header dinamico
+    if has_calibration:
+        print(f"{'RGB Letto':<15} | {'Dist. VERDE':<12} | {'Dist. ROSSO':<12} | {'Dist. BUIO':<12} | {'STATO':<10}")
+    else:
+        print(f"{'RGB Letto':<15} | {'STATO':<10}")
+
     print("-" * 75)
 
     try:
         while True:
-            # --- MODIFICA V 1.20: Protezione Loop ---
+            # Protezione Loop V 1.20
             try:
                 # 1. Leggi
                 rgb = leggi_rgb_attuale(sensor)
-
-                # 2. Calcola Distanze
-                dist_v = calcola_distanza_rgb_raw(rgb, target_verde)
-                dist_r = calcola_distanza_rgb_raw(rgb, target_rosso)
-                dist_b = calcola_distanza_rgb_raw(rgb, target_buio)
-
-                # 3. Determina Stato Istantaneo (Vincitore)
-                distanze = {"VERDE": dist_v, "ROSSO": dist_r, "SPENTO": dist_b}
-                stato = min(distanze, key=distanze.get)
-
-                # 4. Stampa (Formattata)
                 rgb_str = f"{rgb[0]},{rgb[1]},{rgb[2]}"
-                print(f"{rgb_str:<15} | {dist_v:<12.1f} | {dist_r:<12.1f} | {dist_b:<12.1f} | {stato:<10}", end="\r")
+
+                if has_calibration:
+                    # 2. Calcola Distanze
+                    dist_v = calcola_distanza_rgb_raw(rgb, target_verde)
+                    dist_r = calcola_distanza_rgb_raw(rgb, target_rosso)
+                    dist_b = calcola_distanza_rgb_raw(rgb, target_buio)
+
+                    # 3. Determina Stato Istantaneo (Vincitore)
+                    distanze = {"VERDE": dist_v, "ROSSO": dist_r, "SPENTO": dist_b}
+                    stato = min(distanze, key=distanze.get)
+
+                    # 4. Stampa Completa
+                    print(f"{rgb_str:<15} | {dist_v:<12.1f} | {dist_r:<12.1f} | {dist_b:<12.1f} | {stato:<10}",
+                          end="\r")
+                else:
+                    # 4. Stampa Semplice (Solo Raw)
+                    print(f"{rgb_str:<15} | {'NON CALIB.':<10}", end="\r")
 
                 time.sleep(0.2)  # Aggiornamento rapido
             except Exception as e:
-                # Se avviene un errore nel loop (es. sensore disconnesso momentaneamente),
-                # lo stampiamo ma NON usciamo dal loop.
                 print(f"\n❌ ERRORE NEL LOOP DI TEST: {e} - Riprovo...", end="\r")
-                time.sleep(1)  # Pausa di sicurezza per non floodare la CPU
-            # --- FINE MODIFICA V 1.20 ---
+                time.sleep(1)
 
     except KeyboardInterrupt:
         print("\n\n🛑 Test interrotto dall'utente.")
