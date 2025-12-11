@@ -2,19 +2,18 @@
 # ---
 # File: monitor_semaforo_TCS.py
 # Directory: [root]
-# Ultima Modifica: 2025-11-20
-# Versione: 1.22
+# Ultima Modifica: 2025-12-11
+# Versione: 1.23
 # ---
 
 """
 MONITOR SEMAFORO - Versione TCS34725 (4 Stati)
 
-V 1.22:
-- FIX CRITICO: Filtraggio letture (0,0,0).
-- Le letture RGB 0,0,0 sono ora considerate ERRORI di comunicazione
-  (I2C fail) e vengono ignorate, invece di essere interpretate
-  come stato "SPENTO".
-- Questo previene i falsi stati "ATTESA" causati da errori hardware.
+V 1.23:
+- FIX RACE CONDITION MQTT: Aggiunto un ciclo di attesa all'avvio.
+  Lo script ora aspetta che la connessione MQTT sia effettivamente
+  stabilita (flag on_connect) PRIMA di entrare nel loop di monitoraggio.
+  Questo previene l'errore "MQTT OFFLINE" al primo rilevamento.
 """
 
 import time
@@ -405,6 +404,19 @@ def main():
 
     try:
         client.connect(MQTT_BROKER, MQTT_PORT, 60)
+        # --- MODIFICA V 1.23: FIX RACE CONDITION ---
+        print("⏳ Attesa stabilità connessione MQTT...")
+        # Facciamo girare il loop manualmente per un po' per processare l'handshake
+        timeout_wait = 0
+        while not is_mqtt_connected and timeout_wait < 50:  # Max 5 secondi (50 * 0.1)
+            client.loop(timeout=0.1)
+            timeout_wait += 1
+
+        if is_mqtt_connected:
+            print("🚀 Pronto! Monitoraggio avviato.")
+        else:
+            print("⚠️  MQTT non ancora pronto, avvio comunque (si connetterà in background).")
+        # --- FINE MODIFICA V 1.23 ---
     except Exception as e:
         print(f"❌ Errore di connessione MQTT iniziale: {e}")
 
