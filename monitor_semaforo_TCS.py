@@ -2,18 +2,19 @@
 # ---
 # File: monitor_semaforo_TCS.py
 # Directory: [root]
-# Ultima Modifica: 2025-12-11
-# Versione: 1.23
+# Ultima Modifica: 2025-12-16
+# Versione: 1.24
 # ---
 
 """
 MONITOR SEMAFORO - Versione TCS34725 (4 Stati)
 
-V 1.23:
-- FIX RACE CONDITION MQTT: Aggiunto un ciclo di attesa all'avvio.
-  Lo script ora aspetta che la connessione MQTT sia effettivamente
-  stabilita (flag on_connect) PRIMA di entrare nel loop di monitoraggio.
-  Questo previene l'errore "MQTT OFFLINE" al primo rilevamento.
+V 1.24:
+- FIX PERSISTENZA MQTT: Implementata logica "Check & Reconnect" attiva.
+  Invece di affidarsi solo al loop in background, quando c'è un cambio
+  di stato lo script verifica attivamente la connessione.
+  Se è caduta (Keep Alive Timeout), forza una riconnessione immediata
+  prima di tentare la pubblicazione.
 """
 
 import time
@@ -315,9 +316,44 @@ def on_disconnect(client, userdata, flags, reason_code, properties):
     global is_mqtt_connected
     is_mqtt_connected = False
     print(f"⚠️ Disconnesso dal broker MQTT. Reason code: {reason_code}")
-    if reason_code != 0:
-        print("   Tentativo di riconnessione automatica gestito da Paho-MQTT...")
+    # Non stampiamo più "Tentativo di riconnessione" qui perché lo gestiremo attivamente nel main
 
+
+# --- MODIFICA V 1.24: Helper per riconnessione attiva ---
+def ensure_mqtt_connection(client):
+    """
+    Verifica se il client è connesso. Se non lo è, tenta una
+    riconnessione SINCRONA (bloccante) per assicurarsi che
+    il messaggio parta.
+    """
+    global is_mqtt_connected
+
+    # Controllo rapido flag (aggiornato dai callback)
+    # Ma usiamo anche client.is_connected() per sicurezza
+    if not client.is_connected():
+        print("⚠️ MQTT Disconnesso (Timeout?). Tentativo di riconnessione immediata...")
+        try:
+            client.reconnect()
+            # Attesa attiva della riconnessione (max 2 secondi)
+            timeout = 0
+            while not client.is_connected() and timeout < 20:
+                client.loop(timeout=0.1)  # Processa i pacchetti di rete
+                time.sleep(0.1)
+                timeout += 1
+
+            if client.is_connected():
+                print("♻️  Riconnessione riuscita!")
+                return True
+            else:
+                print("❌ Riconnessione fallita (Timeout).")
+                return False
+        except Exception as e:
+            print(f"❌ Errore critico in riconnessione: {e}")
+            return False
+    return True
+
+
+# --- FINE MODIFICA V 1.24 ---
 
 # --- Ciclo Principale ---
 
@@ -406,9 +442,8 @@ def main():
         client.connect(MQTT_BROKER, MQTT_PORT, 60)
         # --- MODIFICA V 1.23: FIX RACE CONDITION ---
         print("⏳ Attesa stabilità connessione MQTT...")
-        # Facciamo girare il loop manualmente per un po' per processare l'handshake
         timeout_wait = 0
-        while not is_mqtt_connected and timeout_wait < 50:  # Max 5 secondi (50 * 0.1)
+        while not is_mqtt_connected and timeout_wait < 50:  # Max 5 secondi
             client.loop(timeout=0.1)
             timeout_wait += 1
 
@@ -466,20 +501,31 @@ def main():
                     }
                     payload = json.dumps({"message": payload_data})
 
-                    if is_mqtt_connected:
+                    # --- MODIFICA V 1.24: Check & Reconnect Attivo ---
+                    # Prima di provare a inviare, ci assicuriamo che la connessione sia viva
+                    # Se non lo è, la funzione 'ensure_mqtt_connection' proverà a ripristinarla ora.
+                    connection_ok = ensure_mqtt_connection(client)
+
+                    if connection_ok:
                         try:
-                            client.publish(MQTT_TOPIC_STATUS, payload, qos=1, retain=True)
+                            info = client.publish(MQTT_TOPIC_STATUS, payload, qos=1, retain=True)
                             client.publish(MQTT_TRIGGER_TOPIC, payload, qos=1, retain=True)
+
+                            # Aspetta che il messaggio sia effettivamente uscito (opzionale ma sicuro)
+                            info.wait_for_publish(timeout=2)
+
                             print(
                                 f"[{datetime_str}] Stato Pubblicato: {stato_pubblicato}. Invio trigger a '{MQTT_TRIGGER_TOPIC}'...")
                         except Exception as e:
-                            print(f"   ⚠️ Errore during la pubblicazione MQTT: {e}. In attesa di riconnessione...")
+                            print(f"   ⚠️ Errore durante la pubblicazione MQTT: {e}. Riproverò al prossimo ciclo.")
+                            # Resetta lo stato pubblicato per forzare il ri-invio al prossimo ciclo
+                            stato_pubblicato = None
                     else:
                         print(
-                            f"[{datetime_str}] Rilevato cambio: {stato_pubblicato}. MQTT OFFLINE. Messaggio non inviato.")
-
-            # Se stato_corrente è None (Errore I2C), saltiamo il ciclo e riproviamo.
-            # Manteniamo il buffer inalterato.
+                            f"[{datetime_str}] Rilevato cambio: {stato_pubblicato}. MQTT OFFLINE (Recupero fallito). Messaggio non inviato.")
+                        # Resetta lo stato pubblicato per forzare il ri-invio appena la connessione torna
+                        stato_pubblicato = None
+                    # --- FINE MODIFICA V 1.24 ---
 
             client.loop(timeout=LOOP_SLEEP_TIME)
 
