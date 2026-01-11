@@ -2,18 +2,18 @@
 # ---
 # File: calibra_sensore.py
 # Directory: utils/
-# Ultima Modifica: 2025-12-01
-# Versione: 1.21
+# Ultima Modifica: 2026-01-11
+# Versione: 1.22
 # ---
 
 """
 SCRIPT: CALIBRAZIONE MANUALE (Ambiente Reale)
 
-V 1.21:
-- Migliorata Opzione 10 (Test Sensore).
-- Ora funziona anche se la calibrazione NON è stata fatta.
-  In quel caso, mostra solo i valori RGB RAW (utile per test hardware),
-  invece di dare errore e uscire.
+V 1.22:
+- Aggiornati i suggerimenti a video per riflettere le nuove raccomandazioni
+  di stabilità:
+  -> Buffer Size: Suggerito 100 (Alta stabilità, ritardo ~10s).
+- Opzione 10 (Test) resta operativa in modalità ibrida (calibrato/raw).
 """
 
 import board
@@ -48,11 +48,8 @@ stop_live_thread = threading.Event()
 def calcola_distanza_rgb_raw(rgb1_tuple, rgb2_dict):
     """Calcola distanza tra una tupla (lettura) e un dict (calibrazione)."""
     r1, g1, b1 = rgb1_tuple
-
-    # Gestione sicurezza se mancano chiavi nel dict
     if not isinstance(rgb2_dict, dict) or not all(k in rgb2_dict for k in ('R', 'G', 'B')):
-        return 9999.9  # Valore altissimo per indicare "non valido"
-
+        return 9999.9
     r2, g2, b2 = rgb2_dict['R'], rgb2_dict['G'], rgb2_dict['B']
     return ((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2) ** 0.5
 
@@ -86,7 +83,6 @@ def inizializza_sensore():
 
 # --- Funzioni di Lettura ---
 def leggi_rgb_attuale(sens):
-    """Legge la tupla (R, G, B) attuale."""
     try:
         result = sens.color_rgb_bytes
         if len(result) >= 3: return result[:3]
@@ -100,7 +96,6 @@ def leggi_rgb_attuale(sens):
 
 
 def leggi_rgb_media(sensor, campioni=CAMPIONI_PER_MEDIA):
-    """Calcola la MEDIA di N campioni (per lo stato SPENTO)."""
     tot_r, tot_g, tot_b, letture_valide = 0, 0, 0, 0
     print(f"   Avvio campionamento MEDIA ({campioni} letture)...")
     for i in range(campioni):
@@ -117,28 +112,14 @@ def leggi_rgb_media(sensor, campioni=CAMPIONI_PER_MEDIA):
         time.sleep(0.05)
     print("\n   ...Campionamento MEDIA completato.")
     if letture_valide == 0: return {"R": 0, "G": 0, "B": 0}
-    return {
-        "R": int(tot_r / letture_valide),
-        "G": int(tot_g / letture_valide),
-        "B": int(tot_b / letture_valide)
-    }
+    return {"R": int(tot_r / letture_valide), "G": int(tot_g / letture_valide), "B": int(tot_b / letture_valide)}
 
 
-# --- MODIFICA V 1.14: Logica Picco CORRETTA ---
 def leggi_rgb_picco(sensor, valore_spento_dict, colore_target):
-    """
-    Calcola il PICCO di N letture (per stati VERDE/ROSSO lampeggianti).
-    Trova la lettura (singola, non media) più LONTANA dal valore SPENTO
-    in un intervallo di 10 secondi.
-    """
-
     picco_rgb_tuple = (0, 0, 0)
-    # Salva il valore R o G più alto trovato
     picco_valore_canale = -1
 
-    # Calcola il tempo di pausa in base all'integration time
-    integration_time_sec = sensor.integration_time / 1000.0  # in secondi
-    # Il ciclo deve includere la lettura (integration_time) + una piccola pausa I2C/Python
+    integration_time_sec = sensor.integration_time / 1000.0
     pausa_ciclo = max(0.05, integration_time_sec + 0.01)
 
     numero_campioni_totali = int(DURATA_CAMPIONAMENTO_PICCO_SEC / pausa_ciclo)
@@ -147,38 +128,27 @@ def leggi_rgb_picco(sensor, valore_spento_dict, colore_target):
     print(f"   Cerco il valore {colore_target} più alto...")
 
     for i in range(numero_campioni_totali):
-        # Legge il valore attuale singolo (NON la media)
         lettura_tuple = leggi_rgb_attuale(sensor)
-
         distanza = calcola_distanza_rgb_raw(lettura_tuple, valore_spento_dict)
-
-        # Stampa diagnostica
         print(
             f"   Campionamento {i + 1}/{numero_campioni_totali}: R={lettura_tuple[0]:<3} G={lettura_tuple[1]:<3} B={lettura_tuple[2]:<3} (Dist: {distanza:<5.1f})",
             end="\r")
 
-        # FILTRO: Ignora le letture troppo vicine a SPENTO (è il buio del lampeggio)
         if distanza > DISTANZA_MINIMA_DA_SPENTO:
-
             if colore_target == "VERDE":
                 valore_canale_corrente = lettura_tuple[1]  # Canale G
-            else:  # colore_target == "ROSSO"
+            else:
                 valore_canale_corrente = lettura_tuple[0]  # Canale R
 
-            # Controlla se questo è il valore (R o G) più alto trovato finora
             if valore_canale_corrente > picco_valore_canale:
                 picco_valore_canale = valore_canale_corrente
                 picco_rgb_tuple = lettura_tuple
-
-        time.sleep(pausa_ciclo)  # Attende il tempo calcolato
+        time.sleep(pausa_ciclo)
 
     print("\n   ...Campionamento PICCO completato.")
     if picco_valore_canale == -1:
-        print("   ⚠️ ATTENZIONE: Nessuna lettura valida trovata (troppo scuro?). Salvataggio (0,0,0).")
+        print("   ⚠️ ATTENZIONE: Nessuna lettura valida trovata.")
     return {"R": picco_rgb_tuple[0], "G": picco_rgb_tuple[1], "B": picco_rgb_tuple[2]}
-
-
-# --- FINE MODIFICA V 1.14 ---
 
 
 def debug_lettura_live_thread():
@@ -186,7 +156,6 @@ def debug_lettura_live_thread():
     if not sensor_thread:
         print("   [LIVE] Errore: sensore non trovato nel thread.")
         return
-
     print("   [LIVE] Avvio lettura live... (si aggiornerà sotto il menu)")
     while not stop_live_thread.is_set():
         try:
@@ -198,77 +167,52 @@ def debug_lettura_live_thread():
     print("\n   [LIVE] Lettura live fermata.                ")
 
 
-# --- NUOVA FUNZIONE V 1.21: TEST SENSORE IBRIDO ---
 def test_sensore_continuo(sensor):
-    """
-    Esegue un loop infinito di lettura.
-    Se calibrato: Mostra RGB + Distanze + Stato.
-    Se NON calibrato: Mostra solo RGB (modalità test hardware puro).
-    """
     print("\n" + "=" * 50)
     print("   TEST SENSORE - LETTURA CONTINUA")
     print("   Premi CTRL+C per fermare e tornare al menu.")
     print("=" * 50)
 
-    # Controlla stato calibrazione (senza bloccare)
     has_calibration = all(k in dati_calibrazione_temporanei for k in ("verde", "non_verde", "buio"))
-
     if not has_calibration:
         print("⚠️  AVVISO: Calibrazione incompleta (Colori mancanti).")
         print("   Il test mostrerà SOLO i valori RGB raw (niente rilevamento stato).")
         time.sleep(2)
-        # Setup variabili fittizie
         target_verde = target_rosso = target_buio = None
     else:
-        # Recupera i target
         target_verde = dati_calibrazione_temporanei['verde']
         target_rosso = dati_calibrazione_temporanei['non_verde']
         target_buio = dati_calibrazione_temporanei['buio']
 
-    # Header dinamico
     if has_calibration:
         print(f"{'RGB Letto':<15} | {'Dist. VERDE':<12} | {'Dist. ROSSO':<12} | {'Dist. BUIO':<12} | {'STATO':<10}")
     else:
         print(f"{'RGB Letto':<15} | {'STATO':<10}")
-
     print("-" * 75)
 
     try:
         while True:
-            # Protezione Loop V 1.20
             try:
-                # 1. Leggi
                 rgb = leggi_rgb_attuale(sensor)
                 rgb_str = f"{rgb[0]},{rgb[1]},{rgb[2]}"
 
                 if has_calibration:
-                    # 2. Calcola Distanze
                     dist_v = calcola_distanza_rgb_raw(rgb, target_verde)
                     dist_r = calcola_distanza_rgb_raw(rgb, target_rosso)
                     dist_b = calcola_distanza_rgb_raw(rgb, target_buio)
-
-                    # 3. Determina Stato Istantaneo (Vincitore)
                     distanze = {"VERDE": dist_v, "ROSSO": dist_r, "SPENTO": dist_b}
                     stato = min(distanze, key=distanze.get)
-
-                    # 4. Stampa Completa
                     print(f"{rgb_str:<15} | {dist_v:<12.1f} | {dist_r:<12.1f} | {dist_b:<12.1f} | {stato:<10}",
                           end="\r")
                 else:
-                    # 4. Stampa Semplice (Solo Raw)
                     print(f"{rgb_str:<15} | {'NON CALIB.':<10}", end="\r")
-
-                time.sleep(0.2)  # Aggiornamento rapido
+                time.sleep(0.2)
             except Exception as e:
                 print(f"\n❌ ERRORE NEL LOOP DI TEST: {e} - Riprovo...", end="\r")
                 time.sleep(1)
-
     except KeyboardInterrupt:
         print("\n\n🛑 Test interrotto dall'utente.")
         time.sleep(1)
-
-
-# --- FINE NUOVA FUNZIONE ---
 
 
 # --- Funzioni Menu ---
@@ -278,11 +222,11 @@ def carica_dati_esistenti():
         if os.path.exists(FILE_CALIBRAZIONE):
             with open(FILE_CALIBRAZIONE, 'r') as f:
                 dati_calibrazione_temporanei = json.load(f)
-            print(f"✅ Dati di calibrazione precedenti caricati da '{FILE_CALIBRAZIONE}'")
+            print(f"✅ Dati caricati da '{FILE_CALIBRAZIONE}'")
         else:
-            print("ℹ️ Nessun file di calibrazione esistente trovato. Si parte da zero.")
+            print("ℹ️ Nessun file trovato. Si parte da zero.")
     except Exception as e:
-        print(f"⚠️ Errore nel caricare 'calibrazione.json': {e}. Si parte da zero.")
+        print(f"⚠️ Errore caricamento: {e}. Si parte da zero.")
         dati_calibrazione_temporanei = {}
 
 
@@ -293,12 +237,10 @@ def format_rgb(valore):
 
 
 def stampa_menu():
-    """Mostra il menu delle opzioni e lo stato della calibrazione."""
     print("\n" + "=" * 55)
     print("--- MENU CALIBRAZIONE SENSORE E CONFIGURAZIONE ---")
     print("=" * 55)
 
-    # Colori
     v = dati_calibrazione_temporanei.get('verde')
     stato_verde = f"✅ CALIBRATO ({format_rgb(v)})" if v else "❌ DA FARE"
 
@@ -308,29 +250,23 @@ def stampa_menu():
     b = dati_calibrazione_temporanei.get('buio')
     stato_buio = f"✅ CALIBRATO ({format_rgb(b)})" if b else "❌ DA FARE"
 
-    # ID Macchina
     machine_id = dati_calibrazione_temporanei.get('machine_id')
     stato_id = f"✅ IMPOSTATO ({machine_id})" if machine_id else "❌ DA IMPOSTARE"
 
-    # Tempo di Integrazione
     integration_time = dati_calibrazione_temporanei.get('integration_time', 150)
     stato_integrazione = f"✅ IMPOSTATO ({integration_time}ms)"
 
-    gain = dati_calibrazione_temporanei.get('gain', 4)  # Default 4
+    gain = dati_calibrazione_temporanei.get('gain', 4)
     stato_gain = f"✅ IMPOSTATO ({gain}x)"
 
     debug_logging = dati_calibrazione_temporanei.get('debug_logging', False)
     stato_debug = "✅ ABILITATO" if debug_logging else "❌ DISABILITATO"
 
-    # --- MODIFICA V 1.15 ---
-    buffer_size = dati_calibrazione_temporanei.get('buffer_size', 35)  # Default 35
+    buffer_size = dati_calibrazione_temporanei.get('buffer_size', 100)
     stato_buffer = f"✅ IMPOSTATO ({buffer_size} letture)"
-    # --- FINE MODIFICA V 1.15 ---
 
-    # --- MODIFICA V 1.17 ---
-    soglia = dati_calibrazione_temporanei.get('steady_state_threshold', 90)  # Default 90
+    soglia = dati_calibrazione_temporanei.get('steady_state_threshold', 90)
     stato_soglia = f"✅ IMPOSTATO ({soglia}%)"
-    # --- FINE MODIFICA V 1.17 ---
 
     print(f"1. Campiona 'Verde' (PICCO luce)                 {stato_verde}")
     print(f"2. Campiona 'Rosso' (PICCO luce)                 {stato_rosso}")
@@ -340,47 +276,29 @@ def stampa_menu():
     print(f"5. Imposta Tempo Integrazione (Sensore)          {stato_integrazione}")
     print(f"6. Imposta Gain Sensore (Sensibilità)            {stato_gain}")
     print(f"7. Abilita/Disabilita Log di Debug                 {stato_debug}")
-    # --- MODIFICA V 1.15 ---
     print(f"8. Imposta Buffer Size (Stabilità Monitor)       {stato_buffer}")
-    # --- FINE MODIFICA V 1.15 ---
-    # --- MODIFICA V 1.16 ---
     print(f"9. Imposta Soglia Stabilità (es. 90%)            {stato_soglia}")
     print("-" * 55)
-    # --- MODIFICA V 1.19 ---
     print(f"10. TEST SENSORE (Lettura Continua)              🔍")
     print("-" * 55)
     print("11. Salva calibrazione e configurazione su file ed Esci")
     print("12. Esci SENZA salvare")
-    # --- FINE MODIFICA V 1.19 ---
     print("=" * 55)
 
 
 def salva_file_calibrazione():
-    """Controlla e salva i dati di calibrazione."""
     print("\n--- RIEPILOGO CONFIGURAZIONE ---")
 
     if "integration_time" not in dati_calibrazione_temporanei:
-        print("   ℹ️ 'Tempo Integrazione' non impostato, imposto il default: 150ms.")
         dati_calibrazione_temporanei["integration_time"] = 150
-
     if "gain" not in dati_calibrazione_temporanei:
-        print("   ℹ️ 'Gain' non impostato, imposto il default: 4x.")
         dati_calibrazione_temporanei["gain"] = 4
-
     if "debug_logging" not in dati_calibrazione_temporanei:
         dati_calibrazione_temporanei["debug_logging"] = False
-
-        # --- MODIFICA V 1.15 ---
     if "buffer_size" not in dati_calibrazione_temporanei:
-        print("   ℹ️ 'Buffer Size' non impostato, imposto il default: 35.")
-        dati_calibrazione_temporanei["buffer_size"] = 35
-    # --- FINE MODIFICA V 1.15 ---
-
-    # --- MODIFICA V 1.17 ---
+        dati_calibrazione_temporanei["buffer_size"] = 100  # Nuovo default suggerito
     if "steady_state_threshold" not in dati_calibrazione_temporanei:
-        print("   ℹ️ 'Soglia Stabilità' non impostata, imposto il default: 90%.")
         dati_calibrazione_temporanei["steady_state_threshold"] = 90
-    # --- FINE MODIFICA V 1.17 ---
 
     mancanti = []
     if "verde" not in dati_calibrazione_temporanei: mancanti.append("Verde")
@@ -388,47 +306,41 @@ def salva_file_calibrazione():
     if "buio" not in dati_calibrazione_temporanei: mancanti.append("Spento")
     if "machine_id" not in dati_calibrazione_temporanei: mancanti.append("ID Macchina")
 
-    # Stampa valori impostati
     print(f"  Verde:             {format_rgb(dati_calibrazione_temporanei.get('verde'))}")
-    print(f"  Rosso (non_verde): {format_rgb(dati_calibrazione_temporanei.get('non_verde'))}")
-    print(f"  Spento (buio):     {format_rgb(dati_calibrazione_temporanei.get('buio'))}")
+    print(f"  Rosso:             {format_rgb(dati_calibrazione_temporanei.get('non_verde'))}")
+    print(f"  Spento:            {format_rgb(dati_calibrazione_temporanei.get('buio'))}")
     print(f"  ID Macchina:       {dati_calibrazione_temporanei.get('machine_id', 'N/D')}")
     print(f"  Tempo Integrazione: {dati_calibrazione_temporanei.get('integration_time', 'N/D')}ms")
     print(f"  Gain Sensore:      {dati_calibrazione_temporanei.get('gain', 'N/D')}x")
     print(
         f"  Log di Debug:      {'Abilitato' if dati_calibrazione_temporanei.get('debug_logging') else 'Disabilitato'}")
-    # --- MODIFICA V 1.15 ---
     print(f"  Buffer Size:       {dati_calibrazione_temporanei.get('buffer_size', 'N/D')} letture")
-    # --- FINE MODIFICA V 1.15 ---
-    # --- MODIFICA V 1.16 ---
     print(f"  Soglia Stabilità:  {dati_calibrazione_temporanei.get('steady_state_threshold', 'N/D')}%")
-    # --- FINE MODIFICA V 1.16 ---
     print("-" * 36)
 
     conferma = 'n'
     if mancanti:
-        print(f"⚠️ ATTENZIONE: I seguenti valori non sono impostati:")
+        print(f"⚠️ ATTENZIONE: Valori mancanti:")
         for m in mancanti: print(f"   - {m}")
         conferma = input(f"Salvare comunque? (s/n): ").lower()
     else:
-        conferma = input(f"Tutti i valori sono impostati. Salvare? (s/n): ").lower()
+        conferma = input(f"Salvare? (s/n): ").lower()
 
     if conferma == 's':
         try:
             os.makedirs(CONFIG_DIR, exist_ok=True)
             with open(FILE_CALIBRAZIONE, 'w') as f:
                 json.dump(dati_calibrazione_temporanei, f, indent=4)
-            print(f"\n✅ Dati salvati con successo in '{FILE_CALIBRAZIONE}'!")
+            print(f"\n✅ Dati salvati in '{FILE_CALIBRAZIONE}'!")
             return True
         except Exception as e:
-            print(f"\n❌ ERRORE durante il salvataggio del file: {e}")
+            print(f"\n❌ ERRORE salvataggio: {e}")
             return False
     else:
         print("   Salvataggio annullato.")
         return False
 
 
-# --- Ciclo Principale ---
 def main():
     os.makedirs(CONFIG_DIR, exist_ok=True)
     carica_dati_esistenti()
@@ -458,177 +370,125 @@ def main():
         stop_live_thread.set()
         live_thread.join(timeout=1.0)
 
-        # --- MODIFICA V 1.19 ---
         scelta = input("Inserisci la tua scelta (1-12): ")
 
-        if scelta == '1' or scelta == '2':  # VERDE o ROSSO (PICCO)
-            # --- FINE MODIFICA V 1.19 ---
-            # --- Logica V 1.12 ---
+        if scelta == '1':
             if 'buio' not in dati_calibrazione_temporanei:
-                print("\n❌ ERRORE: Devi calibrare 'Spento' (Opzione 3) PRIMA di calibrare Verde o Rosso.")
-                time.sleep(2)
-                continue  # Torna al menu
+                print("\n❌ Calibra prima 'Spento' (Opzione 3).")
+                time.sleep(2);
+                continue
+            print("\n--- 1. Campiona PICCO VERDE ---")
+            input(f"Mostra luce VERDE e premi INVIO...")
+            val = leggi_rgb_picco(sensor_main, dati_calibrazione_temporanei['buio'], "VERDE")
+            dati_calibrazione_temporanei["verde"] = val
+            print(f"✅ 'Verde' registrato: {val}")
 
-            valore_spento = dati_calibrazione_temporanei['buio']
+        elif scelta == '2':
+            if 'buio' not in dati_calibrazione_temporanei:
+                print("\n❌ Calibra prima 'Spento' (Opzione 3).")
+                time.sleep(2);
+                continue
+            print("\n--- 2. Campiona PICCO ROSSO ---")
+            input(f"Mostra luce ROSSA e premi INVIO...")
+            val = leggi_rgb_picco(sensor_main, dati_calibrazione_temporanei['buio'], "ROSSO")
+            dati_calibrazione_temporanei["non_verde"] = val
+            print(f"✅ 'Rosso' registrato: {val}")
 
-            if scelta == '1':
-                print("\n--- 1. Campiona PICCO VERDE ---")
-                print("Ora fai in modo che la macchina mostri la luce VERDE (anche lampeggiante).")
-                input(
-                    f"Quando è pronta, premi INVIO per avviare il campionamento ({DURATA_CAMPIONAMENTO_PICCO_SEC} sec)...")
-                # --- MODIFICA V 1.14 ---
-                valore = leggi_rgb_picco(sensor_main, valore_spento, "VERDE")
-                dati_calibrazione_temporanei["verde"] = valore
-                print(f"✅ 'Verde' (Picco) registrato: {valore}")
-
-            else:  # scelta == '2'
-                print("\n--- 2. Campiona PICCO ROSSO ---")
-                print("Ora fai in modo che la macchina mostri la luce ROSSA (anche lampeggiante).")
-                input(
-                    f"Quando è pronta, premi INVIO per avviare il campionamento ({DURATA_CAMPIONAMENTO_PICCO_SEC} sec)...")
-                # --- MODIFICA V 1.14 ---
-                valore = leggi_rgb_picco(sensor_main, valore_spento, "ROSSO")
-                dati_calibrazione_temporanei["non_verde"] = valore
-                print(f"✅ 'Rosso' (Picco) registrato: {valore}")
-
-            time.sleep(1)
-
-        elif scelta == '3':  # SPENTO (MEDIA)
+        elif scelta == '3':
             print("\n--- 3. Campiona MEDIA SPENTO ---")
-            print("Ora fai in modo che la macchina spenga la luce (stato BUIO).")
-            print("CONSIGLIO: Copri il sensore per bloccare la luce ambientale.")
-            input("Quando è pronta, premi INVIO per avviare il campionamento (MEDIA)...")
-            valore = leggi_rgb_media(sensor_main, campioni=CAMPIONI_PER_MEDIA)
-            dati_calibrazione_temporanei["buio"] = valore
-            print(f"✅ 'Spento' (Media) registrato: {valore}")
-            time.sleep(1)
+            print("Copri il sensore (BUIO).")
+            input("Premi INVIO...")
+            val = leggi_rgb_media(sensor_main, campioni=CAMPIONI_PER_MEDIA)
+            dati_calibrazione_temporanei["buio"] = val
+            print(f"✅ 'Spento' registrato: {val}")
 
         elif scelta == '4':
-            print("\n--- 4. Imposta ID Macchina (MQTT) ---")
-            current_id = dati_calibrazione_temporanei.get('machine_id', 'N/D')
-            print(f"   ID Attuale: {current_id}")
-            nuovo_id = input("   Inserisci il nuovo ID Macchina: ")
-            if nuovo_id:
-                dati_calibrazione_temporanei["machine_id"] = nuovo_id
-                print(f"✅ ID Macchina impostato su: '{nuovo_id}'")
-            else:
-                print("   Nessuna modifica.")
-            time.sleep(1)
+            print("\n--- 4. Imposta ID Macchina ---")
+            curr = dati_calibrazione_temporanei.get('machine_id', 'N/D')
+            nid = input(f"   Nuovo ID (Invio per '{curr}'): ")
+            if nid: dati_calibrazione_temporanei["machine_id"] = nid
 
         elif scelta == '5':
-            print("\n--- 5. Imposta Tempo Integrazione (ms) ---")
-            # --- MODIFICA V 1.18: Default cambiato a 150 ---
-            current_time = dati_calibrazione_temporanei.get('integration_time', 150)
-            print(f"   Valore Attuale: {current_time}ms")
-            print(f"   CONSIGLIO: 150 (Veloce, default), 250 (Stabile).")
-            # --- FINE MODIFICA V 1.18 ---
-            try:
-                nuovo_tempo_str = input(f"   Inserisci nuovo tempo (INVIO per {current_time}): ")
-                if nuovo_tempo_str:
-                    nuovo_tempo = int(nuovo_tempo_str)
-                    dati_calibrazione_temporanei["integration_time"] = nuovo_tempo
-                    print(f"✅ Tempo Integrazione impostato su: {nuovo_tempo}ms")
+            print("\n--- 5. Tempo Integrazione ---")
+            curr = dati_calibrazione_temporanei.get('integration_time', 150)
+            print(f"   Attuale: {curr}ms. CONSIGLIO: 150 (Veloce).")
+            n = input(f"   Nuovo (Invio per {curr}): ")
+            if n:
+                try:
+                    dati_calibrazione_temporanei["integration_time"] = int(n)
                     sensor_main = inizializza_sensore()
-                else:
-                    print("   Nessuna modifica.")
-            except ValueError:
-                print("   ❌ Errore: Inserisci solo un numero (es. 150).")
-            time.sleep(1)
+                except:
+                    print("❌ Errore numero.")
 
         elif scelta == '6':
-            print("\n--- 6. Imposta Gain Sensore (Sensibilità) ---")
-            current_gain = dati_calibrazione_temporanei.get('gain', 4)
-            print(f"   Valore Attuale: {current_gain}x")
-            print(f"   Valori validi: {VALID_GAINS}")
-            print(f"   CONSIGLIO: 4 (Rumore basso), 16 (Standard).")
-            try:
-                nuovo_gain_str = input(f"   Inserisci nuovo gain (INVIO per {current_gain}): ")
-                if nuovo_gain_str:
-                    nuovo_gain = int(nuovo_gain_str)
-                    if nuovo_gain in VALID_GAINS:
-                        dati_calibrazione_temporanei["gain"] = nuovo_gain
-                        print(f"✅ Gain impostato su: {nuovo_gain}x")
+            print("\n--- 6. Gain Sensore ---")
+            curr = dati_calibrazione_temporanei.get('gain', 4)
+            print(f"   Attuale: {curr}x. CONSIGLIO: 4 (Low noise).")
+            n = input(f"   Nuovo (Invio per {curr}): ")
+            if n:
+                try:
+                    g = int(n)
+                    if g in VALID_GAINS:
+                        dati_calibrazione_temporanei["gain"] = g
                         sensor_main = inizializza_sensore()
                     else:
-                        print(f"   ❌ Errore: Valore non valido. Scegli tra {VALID_GAINS}.")
-                else:
-                    print("   Nessuna modifica.")
-            except ValueError:
-                print(f"   ❌ Errore: Inserisci solo un numero (es. 4).")
-            time.sleep(1)
+                        print(f"❌ Validi: {VALID_GAINS}")
+                except:
+                    print("❌ Errore numero.")
 
         elif scelta == '7':
-            print("\n--- 7. Abilita/Disabilita Log di Debug ---")
-            current_status = dati_calibrazione_temporanei.get('debug_logging', False)
-            nuovo_stato = not current_status
-            dati_calibrazione_temporanei["debug_logging"] = nuovo_stato
-            if nuovo_stato:
-                print("✅ Log di Debug ABILITATO.")
-                print("   Lo script di monitoraggio scriverà nella cartella 'LOG/'.")
-            else:
-                print("❌ Log di Debug DISABILITATO.")
-            time.sleep(1)
+            print("\n--- 7. Debug Logging ---")
+            curr = dati_calibrazione_temporanei.get('debug_logging', False)
+            dati_calibrazione_temporanei["debug_logging"] = not curr
+            print(f"   Stato cambiato a: {not curr}")
 
-        # --- MODIFICA V 1.15 ---
         elif scelta == '8':
-            print("\n--- 8. Imposta Buffer Size (Stabilità Monitor) ---")
-            current_size = dati_calibrazione_temporanei.get('buffer_size', 35)
-            print(f"   Valore Attuale: {current_size} letture")
-            print(f"   CONSIGLIO: 35 (Stabile, default), 20 (Reattivo).")
-            try:
-                nuovo_size_str = input(f"   Inserisci nuovo buffer size (INVIO per {current_size}): ")
-                if nuovo_size_str:
-                    nuovo_size = int(nuovo_size_str)
-                    if nuovo_size >= 10 and nuovo_size <= 200:
-                        dati_calibrazione_temporanei["buffer_size"] = nuovo_size
-                        print(f"✅ Buffer Size impostato su: {nuovo_size} letture")
+            print("\n--- 8. Imposta Buffer Size ---")
+            curr = dati_calibrazione_temporanei.get('buffer_size', 100)
+            print(f"   Attuale: {curr} letture.")
+            # --- MODIFICA V 1.22: Testo suggerimento aggiornato ---
+            print(f"   CONSIGLIO: 100 (Alta Stabilità, ~10s ritardo), 35 (Vecchio default).")
+            # --- FINE MODIFICA ---
+            n = input(f"   Nuovo (Invio per {curr}): ")
+            if n:
+                try:
+                    v = int(n)
+                    if 10 <= v <= 200:
+                        dati_calibrazione_temporanei["buffer_size"] = v
                     else:
-                        print("   ❌ Errore: Inserisci un numero tra 10 e 200.")
-                else:
-                    print("   Nessuna modifica.")
-            except ValueError:
-                print("   ❌ Errore: Inserisci solo un numero (es. 35).")
-            time.sleep(1)
+                        print("❌ Range 10-200.")
+                except:
+                    print("❌ Errore numero.")
 
-        # --- MODIFICA V 1.17 ---
         elif scelta == '9':
-            print("\n--- 9. Imposta Soglia Stabilità (Stato Fisso) ---")
-            current_soglia = dati_calibrazione_temporanei.get('steady_state_threshold', 90)  # Default 90
-            print(f"   Valore Attuale: {current_soglia}%")
-            print(f"   CONSIGLIO: 90 (Stabile, default), 85 (Più tollerante).")  # Testo aggiornato
-            try:
-                nuova_soglia_str = input(f"   Inserisci nuova soglia % (INVIO per {current_soglia}): ")
-                if nuova_soglia_str:
-                    nuova_soglia = int(nuova_soglia_str)
-                    if nuova_soglia >= 80 and nuova_soglia <= 98:
-                        dati_calibrazione_temporanei["steady_state_threshold"] = nuova_soglia
-                        print(f"✅ Soglia Stabilità impostata su: {nuova_soglia}%")
+            print("\n--- 9. Soglia Stabilità ---")
+            curr = dati_calibrazione_temporanei.get('steady_state_threshold', 90)
+            print(f"   Attuale: {curr}%. CONSIGLIO: 90.")
+            n = input(f"   Nuovo (Invio per {curr}): ")
+            if n:
+                try:
+                    v = int(n)
+                    if 80 <= v <= 98:
+                        dati_calibrazione_temporanei["steady_state_threshold"] = v
                     else:
-                        print("   ❌ Errore: Inserisci un numero tra 80 e 98.")
-                else:
-                    print("   Nessuna modifica.")
-            except ValueError:
-                print("   ❌ Errore: Inserisci solo un numero (es. 90).")
-            time.sleep(1)
+                        print("❌ Range 80-98.")
+                except:
+                    print("❌ Errore numero.")
 
-        # --- MODIFICA V 1.19 ---
         elif scelta == '10':
             test_sensore_continuo(sensor_main)
 
-        elif scelta == '11':  # Salva
-            if salva_file_calibrazione():
-                break  # Esce dal loop
+        elif scelta == '11':
+            if salva_file_calibrazione(): break
 
-        elif scelta == '12':  # Esci
+        elif scelta == '12':
             print("\nUscita senza salvataggio.")
-            break  # Esce dal loop
-
+            break
         else:
-            print(f"Scelta non valida. Inserisci un numero da 1 a 12.")
+            print("❌ Scelta non valida.")
             time.sleep(1)
-        # --- FINE MODIFICA V 1.19 ---
 
-    print("Programma di calibrazione terminato.")
+    print("Programma terminato.")
 
 
 if __name__ == "__main__":
