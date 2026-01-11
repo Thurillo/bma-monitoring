@@ -2,19 +2,18 @@
 # ---
 # File: monitor_semaforo_TCS.py
 # Directory: [root]
-# Ultima Modifica: 2025-12-16
-# Versione: 1.24
+# Ultima Modifica: 2026-01-11
+# Versione: 1.26 (FULL)
 # ---
 
 """
 MONITOR SEMAFORO - Versione TCS34725 (4 Stati)
 
-V 1.24:
-- FIX PERSISTENZA MQTT: Implementata logica "Check & Reconnect" attiva.
-  Invece di affidarsi solo al loop in background, quando c'è un cambio
-  di stato lo script verifica attivamente la connessione.
-  Se è caduta (Keep Alive Timeout), forza una riconnessione immediata
-  prima di tentare la pubblicazione.
+V 1.26:
+- SOGLIA LUMINOSITÀ AUMENTATA: 'MIN_LUMINOSITY_THRESHOLD' portata a 100.
+  Questo elimina i falsi positivi "ROSSO" al buio (fantasmi).
+- INCLUDE FIX MQTT: Riconnessione attiva prima della pubblicazione.
+- INCLUDE FIX RACE CONDITION: Attesa connessione all'avvio.
 """
 
 import time
@@ -36,49 +35,41 @@ except ImportError:
 
 # --- CONFIGURAZIONE LOGICA DI RILEVAMENTO ---
 CAMPIONI_PER_LETTURA = 1
-# --- MODIFICA V 1.21: Loop più veloce ---
-LOOP_SLEEP_TIME = 0.05  # 50ms (era 0.1)
-# --- FINE MODIFICA V 1.21 ---
+LOOP_SLEEP_TIME = 0.05  # 50ms per ciclo (molto reattivo)
 STATE_PERSISTENCE_SECONDS = 0.5
-# --- MODIFICA V 1.19: STEADY_STATE_THRESHOLD rimosso da qui ---
 
-# --- CONFIGURAZIONE DEBUG LOGGING (V 1.06) ---
+# --- MODIFICA V 1.26: SOGLIA DI SICUREZZA ---
+# Se (R + G + B) < 100, forziamo lo stato a SPENTO.
+# Questo elimina i disturbi del sensore al buio che vengono scambiati per colori.
+MIN_LUMINOSITY_THRESHOLD = 100
+# --- FINE MODIFICA V 1.26 ---
+
+# --- CONFIGURAZIONE DEBUG LOGGING ---
 MAX_DEBUG_LINES = 5000
-# --- FINE CONFIGURAZIONE ---
+DEBUG_LOGGING_ENABLED = False
 
-# --- CONFIGURAZIONE MQTT (e Percorsi) ---
+# --- CONFIGURAZIONE MQTT ---
 MQTT_BROKER = "192.168.20.163"
 MQTT_PORT = 1883
-# --- MODIFICA V 1.15: Ripristino Costanti ---
 MQTT_USERNAME = "shima"
 MQTT_PASSWORD = "shima"
-# --- FINE MODIFICA V 1.15 ---
 MQTT_TRIGGER_TOPIC = "bma/cambiostato"
-# ----------------------------------------------
-# --- MODIFICA V 1.14: Ripristino Costanti ---
+
+# --- PERCORSI FILE ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_DIR = os.path.join(SCRIPT_DIR, "config")
 CALIBRATION_FILE = os.path.join(CONFIG_DIR, "calibrazione.json")
 LOG_DIR = os.path.join(SCRIPT_DIR, "LOG")
-# --- FINE MODIFICA V 1.14 ---
-# ----------------------------------------
 
 is_mqtt_connected = False
 current_log_file_path = None
 current_log_line_count = 0
 CSV_HEADER = "Timestamp,R,G,B,StatoIstantaneo,StatoComposito\n"
-DEBUG_LOGGING_ENABLED = False
-# ----------------------------------------
+STEADY_STATE_THRESHOLD = 0.90  # Default, sovrascritto dalla config
 
-# --- MODIFICA V 1.20: Default cambiato a 0.90 ---
-STEADY_STATE_THRESHOLD = 0.90  # Default, verrà sovrascritto
-
-
-# --- FINE MODIFICA V 1.20 ---
 
 # --- Inizializzazione Hardware ---
 
-# --- MODIFICA V 1.10: Correzione GAIN ---
 def inizializza_sensore(integration_time, gain):
     """Inizializza il sensore TCS34725."""
     print("🔧 Inizializzazione sensore TCS34725...")
@@ -92,7 +83,7 @@ def inizializza_sensore(integration_time, gain):
         else:
             print(f"   ⚠️ Gain {gain} non valido, imposto 4x.")
             sensor.gain = 4
-            gain = 4  # Aggiorna la variabile per il log
+            gain = 4
 
         print(f"✅ Sensore inizializzato (Time: {integration_time}ms, Gain: {gain}x).")
         return sensor
@@ -102,8 +93,6 @@ def inizializza_sensore(integration_time, gain):
         return None
 
 
-# --- FINE MODIFICA V 1.10 ---
-
 def carica_calibrazione():
     """Carica i dati di calibrazione dal file JSON."""
     global DEBUG_LOGGING_ENABLED, STEADY_STATE_THRESHOLD
@@ -111,31 +100,22 @@ def carica_calibrazione():
     if not os.path.exists(CALIBRATION_FILE):
         print(f"❌ ERRORE: File di calibrazione non trovato!")
         print(f"   Esegui prima 'utils/calibra_sensore.py'")
-        print(f"   Percorso cercato: {CALIBRATION_FILE}")
         return None
 
     try:
         with open(CALIBRATION_FILE, 'r') as f:
             data = json.load(f)
         if "verde" not in data or "non_verde" not in data or "buio" not in data:
-            print("❌ ERRORE: File di calibrazione incompleto (mancano i colori).")
-            print("   Esegui 'utils/calibra_sensore.py' per ricalibrare.")
+            print("❌ ERRORE: File di calibrazione incompleto.")
             return None
 
         DEBUG_LOGGING_ENABLED = data.get('debug_logging', False)
         if DEBUG_LOGGING_ENABLED:
             print("ℹ️  Logging di Debug Avanzato ATTIVO (scrive su /LOG)")
-        else:
-            print("ℹ️  Logging di Debug Avanzato DISATTIVATO.")
 
-        # --- MODIFICA V 1.20: Carica STEADY_STATE_THRESHOLD, default 90 ---
-        # Carica il valore (es. 90) e lo converte in float (0.90)
-        soglia_percent = data.get('steady_state_threshold', 90)  # Default 90%
+        soglia_percent = data.get('steady_state_threshold', 90)
         STEADY_STATE_THRESHOLD = soglia_percent / 100.0
-        if soglia_percent == 90 and 'steady_state_threshold' not in data:
-            print(f"⚠️  'steady_state_threshold' non trovato in config, uso default: 90%")
         print(f"ℹ️  Soglia di stabilità impostata a: {soglia_percent}%")
-        # --- FINE MODIFICA V 1.20 ---
 
         print(f"✅ Dati di calibrazione caricati da '{CALIBRATION_FILE}'")
         return data
@@ -166,14 +146,9 @@ def leggi_rgb_stabilizzato(sensor, campioni=CAMPIONI_PER_LETTURA):
     for _ in range(campioni):
         try:
             r, g, b = leggi_rgb_attuale(sensor)
-
-            # --- MODIFICA V 1.22: Filtro Errori I2C ---
-            # Se la lettura è esattamente 0,0,0, è un errore hardware/I2C.
-            # Lo ignoriamo per non "sporcare" la media con falsi neri.
+            # Filtro Errori I2C (0,0,0) - Ignoriamo letture nulle
             if r == 0 and g == 0 and b == 0:
                 continue
-                # --- FINE MODIFICA ---
-
             letture_valide += 1;
             tot_r += r;
             tot_g += g;
@@ -182,129 +157,90 @@ def leggi_rgb_stabilizzato(sensor, campioni=CAMPIONI_PER_LETTURA):
             pass
         time.sleep(0.01)
 
-        # Se tutte le letture sono fallite o erano 0,0,0
     if letture_valide == 0: return {"R": 0, "G": 0, "B": 0}
-
     return {"R": int(tot_r / letture_valide), "G": int(tot_g / letture_valide), "B": int(tot_b / letture_valide)}
 
 
 def calcola_distanza_rgb(rgb1, rgb2):
-    """Calcola la distanza Euclidea tra due colori RGB."""
     r1, g1, b1 = rgb1['R'], rgb1['G'], rgb1['B']
     r2, g2, b2 = rgb2['R'], rgb2['G'], rgb2['B']
     return ((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2) ** 0.5
 
 
 def get_instant_status(sensor, calib_data):
-    """Determina lo stato istantaneo (ROSSO, VERDE, SPENTO)."""
+    """Determina lo stato istantaneo basandosi su distanza colori e luminosità."""
     rgb_medio = leggi_rgb_stabilizzato(sensor)
 
-    # --- MODIFICA V 1.22: Gestione Errore Totale ---
-    # Se anche dopo i tentativi otteniamo 0,0,0, lo trattiamo come "ERRORE"
-    # invece che "SPENTO" per non triggerare ATTESA.
-    # Ritorniamo None per dire "Nessuna lettura valida"
+    # Gestione Errore Hardware (lettura 0,0,0 persistente)
     if rgb_medio["R"] == 0 and rgb_medio["G"] == 0 and rgb_medio["B"] == 0:
         return None, rgb_medio
+
+    # --- MODIFICA V 1.26: CHECK LUMINOSITÀ MINIMA ---
+    # Se la luce totale è troppo bassa, è SPENTO a prescindere dal colore.
+    somma_lux = rgb_medio["R"] + rgb_medio["G"] + rgb_medio["B"]
+    if somma_lux < MIN_LUMINOSITY_THRESHOLD:
+        return "SPENTO", rgb_medio
     # --- FINE MODIFICA ---
 
     dist_verde = calcola_distanza_rgb(rgb_medio, calib_data['verde'])
     dist_rosso = calcola_distanza_rgb(rgb_medio, calib_data['non_verde'])
     dist_buio = calcola_distanza_rgb(rgb_medio, calib_data['buio'])
 
-    distanze = {
-        "VERDE": dist_verde,
-        "ROSSO": dist_rosso,
-        "SPENTO": dist_buio
-    }
-
+    distanze = {"VERDE": dist_verde, "ROSSO": dist_rosso, "SPENTO": dist_buio}
     stato_piu_vicino = min(distanze, key=distanze.get)
     return stato_piu_vicino, rgb_medio
 
 
-# --- MODIFICA V 1.18: Funzione di analisi riscritta ---
 def analyze_state_buffer(buffer):
-    """
-    Analizza il buffer per determinare lo stato composito.
-    (Logica V 1.18 - Inversione delle priorità)
-    """
+    """Analizza il buffer (sliding window) per determinare lo stato stabile."""
     rosso_count = buffer.count("ROSSO")
     verde_count = buffer.count("VERDE")
     spento_count = buffer.count("SPENTO")
+    total = len(buffer)
 
-    # REGOLA 1: ROSSO ha la priorità assoluta.
-    # Se c'è ANCHE UN SOLO "ROSSO" nel buffer, lo stato è ROSSO.
-    if rosso_count > 0:
-        return "ROSSO"
+    # REGOLA 1: Priorità ROSSO (Richiede almeno 3 campioni per evitare glitch singoli)
+    if rosso_count >= 3: return "ROSSO"
 
-    # REGOLA 2: SPENTO (Fisso)
-    # Se non c'è ROSSO, controlliamo se è SPENTO.
-    # Richiede che la % (STEADY_STATE_THRESHOLD) del buffer sia SPENTO.
-    if spento_count / len(buffer) >= STEADY_STATE_THRESHOLD:
-        return "SPENTO"
+    # REGOLA 2/3: Stati Fissi (SPENTO o VERDE) basati sulla soglia %
+    if spento_count / total >= STEADY_STATE_THRESHOLD: return "SPENTO"
+    if verde_count / total >= STEADY_STATE_THRESHOLD: return "VERDE"
 
-    # REGOLA 3: VERDE (Fisso)
-    # Se non è ROSSO e non è SPENTO Fisso, controlliamo se è VERDE Fisso.
-    # Richiede che la % (STEADY_STATE_THRESHOLD) del buffer sia VERDE.
-    if verde_count / len(buffer) >= STEADY_STATE_THRESHOLD:
-        return "VERDE"
+    # REGOLA 4: Lampeggio (ATTESA)
+    if verde_count > 0 and spento_count > 0: return "ATTESA"
 
-    # REGOLA 4: ATTESA (Lampeggiante)
-    # Se non è ROSSO, né SPENTO Fisso, né VERDE Fisso,
-    # ma contiene SIA VERDE CHE SPENTO, allora deve essere ATTESA.
-    if verde_count > 0 and spento_count > 0:
-        return "ATTESA"
-
-    # REGOLA 5: Fallback (Stato di transizione o buffer non ancora pieno)
-    # Se non è nessuna delle precedenti (es. buffer solo VERDE ma < 90%),
-    # manteniamo lo stato dominante tra VERDE e SPENTO.
+    # Fallback
     if verde_count > spento_count:
         return "VERDE"
     else:
         return "SPENTO"
 
 
-# --- FINE MODIFICA V 1.18 ---
-
-# --- FUNZIONE LOGGING V 1.06 (STRATEGIA 1): ROTAZIONE FILE ---
 def write_debug_log(timestamp_str, rgb, instant_state, composite_state):
-    """Scrive sul file di debug CSV, gestendo la rotazione del file."""
     global current_log_file_path, current_log_line_count, DEBUG_LOGGING_ENABLED
-
-    if not DEBUG_LOGGING_ENABLED:
-        return
+    if not DEBUG_LOGGING_ENABLED: return
 
     try:
         if current_log_file_path is None or current_log_line_count >= MAX_DEBUG_LINES:
             now_filename = datetime.now().strftime('%Y-%m-%d_%H%M%S')
             new_filename = f"debug_log_{now_filename}.csv"
             current_log_file_path = os.path.join(LOG_DIR, new_filename)
-
-            with open(current_log_file_path, 'w') as f:
-                f.write(CSV_HEADER)
+            with open(current_log_file_path, 'w') as f: f.write(CSV_HEADER)
             current_log_line_count = 1
 
-            # Gestione stato nullo per il log
         st_ist = instant_state if instant_state else "ERR"
-
         line = f"{timestamp_str},{rgb['R']},{rgb['G']},{rgb['B']},{st_ist},{composite_state}\n"
-
         with open(current_log_file_path, 'a') as f:
             f.write(line)
         current_log_line_count += 1
-
     except Exception as e:
         print(f"   ⚠️ Errore scrittura debug log: {e}")
 
 
-# --- FINE FUNZIONE V 1.06 ---
-
-
-# --- Funzioni MQTT ---
+# --- MQTT Functions ---
 def on_connect(client, userdata, flags, rc, properties):
-    """Callback per quando ci si connette al broker."""
     global is_mqtt_connected
     if rc == 0:
-        print(f"✅ Connesso al broker MQTT! (Flags: {flags}, RC: {rc})")
+        print(f"✅ Connesso al broker MQTT! (RC: {rc})")
         is_mqtt_connected = True
     else:
         print(f"❌ Connessione MQTT fallita, codice: {rc}.")
@@ -312,164 +248,106 @@ def on_connect(client, userdata, flags, rc, properties):
 
 
 def on_disconnect(client, userdata, flags, reason_code, properties):
-    """Callback per quando ci si disconnette."""
     global is_mqtt_connected
     is_mqtt_connected = False
-    print(f"⚠️ Disconnesso dal broker MQTT. Reason code: {reason_code}")
-    # Non stampiamo più "Tentativo di riconnessione" qui perché lo gestiremo attivamente nel main
+    print(f"⚠️ Disconnesso dal broker MQTT. RC: {reason_code}")
 
 
-# --- MODIFICA V 1.24: Helper per riconnessione attiva ---
 def ensure_mqtt_connection(client):
-    """
-    Verifica se il client è connesso. Se non lo è, tenta una
-    riconnessione SINCRONA (bloccante) per assicurarsi che
-    il messaggio parta.
-    """
+    """Verifica e forza riconnessione se necessario prima di pubblicare."""
     global is_mqtt_connected
-
-    # Controllo rapido flag (aggiornato dai callback)
-    # Ma usiamo anche client.is_connected() per sicurezza
     if not client.is_connected():
-        print("⚠️ MQTT Disconnesso (Timeout?). Tentativo di riconnessione immediata...")
+        print("⚠️ MQTT Disconnesso. Tentativo di riconnessione immediata...")
         try:
             client.reconnect()
-            # Attesa attiva della riconnessione (max 2 secondi)
             timeout = 0
+            # Attesa attiva della riconnessione (max 2 secondi)
             while not client.is_connected() and timeout < 20:
-                client.loop(timeout=0.1)  # Processa i pacchetti di rete
+                client.loop(timeout=0.1)
                 time.sleep(0.1)
                 timeout += 1
-
             if client.is_connected():
                 print("♻️  Riconnessione riuscita!")
                 return True
             else:
-                print("❌ Riconnessione fallita (Timeout).")
+                print("❌ Riconnessione fallita.")
                 return False
         except Exception as e:
-            print(f"❌ Errore critico in riconnessione: {e}")
+            print(f"❌ Errore riconnessione: {e}")
             return False
     return True
 
 
-# --- FINE MODIFICA V 1.24 ---
-
-# --- Ciclo Principale ---
-
+# --- Main ---
 def main():
     global is_mqtt_connected, DEBUG_LOGGING_ENABLED
-
     calibrated_data = carica_calibrazione()
-    if not calibrated_data:
-        print("Impossibile avviare. File di calibrazione mancante o corrotto.")
-        return
+    if not calibrated_data: return
 
-    if DEBUG_LOGGING_ENABLED:
-        try:
-            os.makedirs(LOG_DIR, exist_ok=True)
-        except Exception as e:
-            print(f"❌ ERRORE: Impossibile creare la directory LOG: {e}")
-            print("   Il debug logging CSV sarà disabilitato.")
-            DEBUG_LOGGING_ENABLED = False
+    if DEBUG_LOGGING_ENABLED: os.makedirs(LOG_DIR, exist_ok=True)
 
-    # --- MODIFICA V 1.21: Default cambiato a 150 ---
     integration_time = calibrated_data.get('integration_time', 150)
-    # --- FINE MODIFICA V 1.21 ---
     gain = calibrated_data.get('gain', 4)
-
-    # --- MODIFICA V 1.16: Carica BUFFER_SIZE da config ---
     BUFFER_SIZE = calibrated_data.get('buffer_size', 35)
-    # --- FINE MODIFICA V 1.16 ---
 
-    # --- MODIFICA V 1.21: Default cambiato a 150 ---
+    # Check parametri minimi
     if integration_time == 150 and 'integration_time' not in calibrated_data:
-        print("⚠️  'integration_time' non trovato in config, uso default: 150ms")
-    # --- FINE MODIFICA V 1.21 ---
+        print("⚠️  'integration_time' default: 150ms")
     if gain == 4 and 'gain' not in calibrated_data:
-        print("⚠️  'gain' non trovato in config, uso default: 4x")
-    # --- MODIFICA V 1.16 ---
-    if BUFFER_SIZE == 35 and 'buffer_size' not in calibrated_data:
-        print("⚠️  'buffer_size' non trovato in config, uso default: 35")
-    print(f"ℹ️  Buffer operativo impostato a {BUFFER_SIZE} letture.")
-    # --- FINE MODIFICA V 1.16 ---
+        print("⚠️  'gain' default: 4x")
+
+    print(f"ℹ️  Buffer operativo: {BUFFER_SIZE} letture.")
 
     sensor = inizializza_sensore(integration_time, gain)
-    if not sensor:
-        print("Impossibile avviare. Controlla hardware.")
-        return
+    if not sensor: return
 
-    if "machine_id" not in calibrated_data or not calibrated_data["machine_id"]:
-        print(f"❌ ERRORE: 'machine_id' non trovato o non impostato in '{CALIBRATION_FILE}'.")
-        print(f"   Esegui 'utils/calibra_sensore.py' e imposta un ID Macchina (Opzione 4).")
-        return
-
-    MACHINE_ID = calibrated_data.get("machine_id")
+    MACHINE_ID = calibrated_data.get("machine_id", "Unknown")
     MQTT_TOPIC_STATUS = f"bma/{MACHINE_ID}/semaforo/stato"
 
-    # --- MODIFICA V 1.13 (invariata) ---
-    INIT_BUFFER_SIZE = 20
-    print(f"Avvio... (Inizializzazione buffer... {INIT_BUFFER_SIZE} letture)")
-    # --- MODIFICA V 1.16: Usa il BUFFER_SIZE caricato ---
+    # Pre-riempimento buffer
     visual_state_buffer = deque(maxlen=BUFFER_SIZE)
-    # --- FINE MODIFICA V 1.16 ---
-
-    for i in range(INIT_BUFFER_SIZE):
-        stato_iniziale, _ = get_instant_status(sensor, calibrated_data)
-        # --- MODIFICA V 1.22: Gestione Errore in Inizializzazione ---
-        if stato_iniziale:  # Se non è None (errore)
-            visual_state_buffer.append(stato_iniziale)
-            print(f"   Lettura... {i + 1}/{INIT_BUFFER_SIZE} -> {stato_iniziale}   ", end="\r")
+    print("Avvio buffer...")
+    for i in range(20):
+        st, _ = get_instant_status(sensor, calibrated_data)
+        if st:
+            visual_state_buffer.append(st)
+            print(f"   Lettura {i + 1} -> {st}   ", end="\r")
         else:
-            print(f"   Lettura... {i + 1}/{INIT_BUFFER_SIZE} -> ERRORE SENSOR ", end="\r")
-        # --- FINE MODIFICA ---
+            print(f"   Lettura {i + 1} -> ERR ", end="\r")
         time.sleep(LOOP_SLEEP_TIME)
-
-        # Se il buffer è vuoto (tutti errori), riempilo con SPENTO per evitare crash
     if not visual_state_buffer:
         for _ in range(BUFFER_SIZE): visual_state_buffer.append("SPENTO")
 
-    print("\n✅ Inizializzazione completata.")
-
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=MACHINE_ID)
     client.on_connect, client.on_disconnect = on_connect, on_disconnect
-    # --- MODIFICA V 1.15: Ripristino Costanti ---
     client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
-    # --- FINE MODIFICA V 1.15 ---
     client.reconnect_delay_set(min_delay=1, max_delay=30)
 
     try:
         client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        # --- MODIFICA V 1.23: FIX RACE CONDITION ---
-        print("⏳ Attesa stabilità connessione MQTT...")
-        timeout_wait = 0
-        while not is_mqtt_connected and timeout_wait < 50:  # Max 5 secondi
-            client.loop(timeout=0.1)
-            timeout_wait += 1
-
+        print("\n⏳ Attesa stabilità MQTT (Max 5s)...")
+        t = 0
+        while not is_mqtt_connected and t < 50:
+            client.loop(0.1);
+            t += 1
         if is_mqtt_connected:
-            print("🚀 Pronto! Monitoraggio avviato.")
+            print("🚀 Monitoraggio avviato.")
         else:
-            print("⚠️  MQTT non ancora pronto, avvio comunque (si connetterà in background).")
-        # --- FINE MODIFICA V 1.23 ---
+            print("⚠️  MQTT non pronto, avvio in background.")
     except Exception as e:
-        print(f"❌ Errore di connessione MQTT iniziale: {e}")
+        print(f"❌ Errore MQTT iniziale: {e}")
 
     stato_pubblicato = None
-    last_published_change_time = 0
-
     prev_composite_state = None
-
-    print("Monitoraggio attivo.")
+    last_published_change_time = 0
 
     try:
         while True:
             stato_corrente, rgb_corrente = get_instant_status(sensor, calibrated_data)
 
-            # --- MODIFICA V 1.22: Ignora letture invalide ---
-            if stato_corrente:  # Se non è None
+            # Se la lettura è valida (non None)
+            if stato_corrente:
                 visual_state_buffer.append(stato_corrente)
-
                 stato_composito = analyze_state_buffer(visual_state_buffer)
 
                 stato_da_pubblicare = None
@@ -478,59 +356,49 @@ def main():
                     if stato_composito != stato_pubblicato:
                         last_published_change_time = time.time()
                 else:
+                    # Ritardo per lo SPENTO per evitare flickering
                     if time.time() - last_published_change_time > STATE_PERSISTENCE_SECONDS:
                         stato_da_pubblicare = "SPENTO"
                     else:
                         stato_da_pubblicare = stato_pubblicato
 
+                        # Debug Log
                 if stato_composito != prev_composite_state:
                     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
                     write_debug_log(now_str, rgb_corrente, stato_corrente, stato_composito)
                     prev_composite_state = stato_composito
 
+                    # Pubblicazione MQTT
                 if stato_da_pubblicare != stato_pubblicato:
-                    stato_pubblicato = stato_da_pubblicare
-                    last_published_change_time = time.time()
+                    ts = time.time()
+                    dt_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts))
 
-                    timestamp = time.time()
-                    datetime_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(timestamp))
+                    payload = json.dumps({"message": {
+                        "stato": stato_da_pubblicare, "machine_id": MACHINE_ID,
+                        "timestamp": ts, "datetime_str": dt_str
+                    }})
 
-                    payload_data = {
-                        "stato": stato_pubblicato, "machine_id": MACHINE_ID,
-                        "timestamp": timestamp, "datetime_str": datetime_str
-                    }
-                    payload = json.dumps({"message": payload_data})
-
-                    # --- MODIFICA V 1.24: Check & Reconnect Attivo ---
-                    # Prima di provare a inviare, ci assicuriamo che la connessione sia viva
-                    # Se non lo è, la funzione 'ensure_mqtt_connection' proverà a ripristinarla ora.
-                    connection_ok = ensure_mqtt_connection(client)
-
-                    if connection_ok:
+                    # Connessione Sicura prima di Inviare
+                    if ensure_mqtt_connection(client):
                         try:
                             info = client.publish(MQTT_TOPIC_STATUS, payload, qos=1, retain=True)
                             client.publish(MQTT_TRIGGER_TOPIC, payload, qos=1, retain=True)
-
-                            # Aspetta che il messaggio sia effettivamente uscito (opzionale ma sicuro)
-                            info.wait_for_publish(timeout=2)
-
-                            print(
-                                f"[{datetime_str}] Stato Pubblicato: {stato_pubblicato}. Invio trigger a '{MQTT_TRIGGER_TOPIC}'...")
+                            info.wait_for_publish(2)
+                            print(f"[{dt_str}] Stato: {stato_da_pubblicare} -> MQTT OK")
+                            stato_pubblicato = stato_da_pubblicare
+                            last_published_change_time = ts
                         except Exception as e:
-                            print(f"   ⚠️ Errore durante la pubblicazione MQTT: {e}. Riproverò al prossimo ciclo.")
-                            # Resetta lo stato pubblicato per forzare il ri-invio al prossimo ciclo
+                            print(f"⚠️ Errore Pubblicazione: {e}")
+                            # Forziamo il ri-invio al prossimo giro
                             stato_pubblicato = None
                     else:
-                        print(
-                            f"[{datetime_str}] Rilevato cambio: {stato_pubblicato}. MQTT OFFLINE (Recupero fallito). Messaggio non inviato.")
-                        # Resetta lo stato pubblicato per forzare il ri-invio appena la connessione torna
+                        print(f"[{dt_str}] Stato: {stato_da_pubblicare} -> MQTT FAIL")
                         stato_pubblicato = None
-                    # --- FINE MODIFICA V 1.24 ---
 
             client.loop(timeout=LOOP_SLEEP_TIME)
 
     except KeyboardInterrupt:
-        print("\n🛑 Chiusura del programma...")
+        print("\n🛑 Stop.")
     finally:
         print("🧹 Rilascio risorse...")
         client.disconnect()
