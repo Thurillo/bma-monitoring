@@ -2,21 +2,25 @@
 # ---
 # File: monitor_semaforo_TCS.py
 # Directory: [root]
-# Ultima Modifica: 2026-01-11
-# Versione: 1.29 (No Override)
+# Ultima Modifica: 2026-01-12
+# Versione: 1.30 (Low Light Thresholds)
 # ---
 
 """
 MONITOR SEMAFORO - Versione TCS34725 (4 Stati)
 
-V 1.29:
-- RIMOSSA FORZATURA BUFFER: Lo script ora rispetta fedelmente
-  il valore 'buffer_size' nel file di configurazione, anche se basso.
-  Non sovrascrive più automaticamente a 100.
-- Restano attive le logiche di stabilità:
-  1. Loop a 0.1s (10Hz).
-  2. Filtro Rosso a 15 campioni.
-  3. Soglie Luminosità differenziate (Base 50, Rosso 100).
+V 1.30:
+- FIX SOGLIE LUMINOSITÀ:
+  Le soglie precedenti (Base 50, Rosso 100) erano troppo alte per
+  questa specifica macchina, dove il Rosso Calibrato ha somma ~62
+  e il Buio ha somma ~50.
+
+  Nuove Soglie:
+  - MIN_LUMINOSITY_BASE: 40 (per accettare segnali deboli)
+  - MIN_LUMINOSITY_RED: 55 (per accettare il rosso a 62, filtrando sotto il buio a 50)
+
+  NOTA: La distinzione tra Buio (50) e Rosso (62) è molto sottile.
+  La calibrazione del "Buio" mostra molta luce ambientale (R22+G21+B7).
 """
 
 import time
@@ -42,9 +46,12 @@ CAMPIONI_PER_LETTURA = 1
 LOOP_SLEEP_TIME = 0.1
 STATE_PERSISTENCE_SECONDS = 0.5
 
-# --- SOGLIE LUMINOSITÀ (V 1.27) ---
-MIN_LUMINOSITY_BASE = 50
-MIN_LUMINOSITY_RED = 100
+# --- MODIFICA V 1.30: SOGLIE ABBASSATE ---
+# Soglia minima generale (Il tuo verde è ~61, il buio ~50. Mettiamo 40 per sicurezza)
+MIN_LUMINOSITY_BASE = 40
+# Soglia specifica per il ROSSO (Il tuo rosso è ~62. Deve essere < 62 ma > 50 del buio)
+MIN_LUMINOSITY_RED = 55
+# --- FINE MODIFICA V 1.30 ---
 
 # --- CONFIGURAZIONE DEBUG LOGGING ---
 MAX_DEBUG_LINES = 5000
@@ -149,8 +156,10 @@ def get_instant_status(sensor, calib_data):
     rgb = leggi_rgb_stabilizzato(sensor)
     if rgb["R"] == 0 and rgb["G"] == 0 and rgb["B"] == 0: return None, rgb
 
-    # Logica V 1.27
+    # Logica V 1.30 (Soglie abbassate)
     somma_lux = sum(rgb.values())
+
+    # 1. Filtro Base (Buio profondo)
     if somma_lux < MIN_LUMINOSITY_BASE: return "SPENTO", rgb
 
     distanze = {
@@ -160,7 +169,10 @@ def get_instant_status(sensor, calib_data):
     }
     stato = min(distanze, key=distanze.get)
 
+    # 2. Filtro Rosso
+    # Se rileva ROSSO ma la luce totale è < 55, lo consideriamo un'ombra/buio.
     if stato == "ROSSO" and somma_lux < MIN_LUMINOSITY_RED: return "SPENTO", rgb
+
     return stato, rgb
 
 
@@ -171,9 +183,7 @@ def analyze_state_buffer(buffer):
     total = len(buffer)
 
     # --- Filtro ROSSO ---
-    # Richiede che il rosso persista per una frazione significativa del buffer.
-    # Con buffer=100 e loop=0.1s, 15 campioni = 1.5 secondi.
-    # Se l'utente riduce il buffer (es. a 35), 15 campioni = 1.5s su 3.5s totali.
+    # Richiede che il rosso persista per una frazione significativa.
     if rosso >= 15: return "ROSSO"
 
     if spento / total >= STEADY_STATE_THRESHOLD: return "SPENTO"
@@ -239,11 +249,9 @@ def main():
     if not data: return
     if DEBUG_LOGGING_ENABLED: os.makedirs(LOG_DIR, exist_ok=True)
 
-    # --- MODIFICA V 1.29: Rispetto totale config ---
-    # Nessuna forzatura. Se l'utente ha messo 35, usiamo 35.
-    BUFFER_SIZE = data.get('buffer_size', 100)  # Default 100 se manca la chiave
+    # Rispetto config utente
+    BUFFER_SIZE = data.get('buffer_size', 100)
     print(f"ℹ️  Buffer operativo da config: {BUFFER_SIZE} letture.")
-    # --- FINE MODIFICA ---
 
     sensor = inizializza_sensore(data.get('integration_time', 150), data.get('gain', 4))
     if not sensor: return
@@ -258,7 +266,7 @@ def main():
         buffer.append(st if st else "SPENTO")
         time.sleep(LOOP_SLEEP_TIME)
 
-    # Fill remaining if any
+    # Fill remaining
     while len(buffer) < BUFFER_SIZE: buffer.append("SPENTO")
 
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=mid)
